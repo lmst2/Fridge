@@ -48,7 +48,7 @@ end
 function OnChestCreated(event)
   local entity = event.created_entity or event.entity
   -- Check if entity is a valid fridge
-  if entity and entity.valid and entity.name == "refrigerater" then
+  if entity and entity.valid then
     table.insert(storage.Fridges, entity)
   end
 end
@@ -60,7 +60,7 @@ end
 function OnEntityRemoved(event)
   local entity = event.entity
   -- Check if entity is a valid fridge that was removed
-  if entity and entity.valid and entity.name == "refrigerater" then
+  if entity and entity.valid then
     local filtered = {}
     -- Create new list excluding the removed fridge
     for _, chest in pairs(storage.Fridges) do
@@ -80,7 +80,11 @@ do
   -- Scans all game surfaces for fridges and adds them to storage
   local function init_chests()
     for _, surface in pairs(game.surfaces) do
-      local chests = surface.find_entities_filtered{ name = "refrigerater" }
+      local chests = surface.find_entities_filtered{ name = {
+        "refrigerater", 
+        "logistic-refrigerater-passive-provider", 
+        "logistic-refrigerater-requester"
+      } }
       for _, chest in pairs(chests) do
         table.insert(storage.Fridges, chest)
       end
@@ -91,15 +95,20 @@ do
   -- @function init_events
   -- Sets up all event handlers for fridge creation, removal and updates
   local function init_events()
-    local filter = {{ filter="name", name="refrigerater" }}
+    local filter = {
+      { filter="name", name="refrigerater" },
+      { filter="name", name="logistic-refrigerater-passive-provider"},
+      { filter="name", name="logistic-refrigerater-requester"}
+    }
     script.on_event(defines.events.on_built_entity, OnChestCreated, filter)
     script.on_event(defines.events.on_robot_built_entity, OnChestCreated, filter)
-    script.on_event({defines.events.script_raised_built, defines.events.script_raised_revive}, OnChestCreated)
+    script.on_event(defines.events.script_raised_built, OnChestCreated, filter)
+    script.on_event(defines.events.script_raised_revive, OnChestCreated, filter)
     script.on_event(defines.events.on_tick, on_tick)
     script.on_event(defines.events.on_player_mined_entity, OnEntityRemoved, filter)
     script.on_event(defines.events.on_robot_mined_entity, OnEntityRemoved, filter)
     script.on_event(defines.events.on_entity_died, OnEntityRemoved, filter)
-    script.on_event(defines.events.script_raised_destroy, OnEntityRemoved)
+    script.on_event(defines.events.script_raised_destroy, OnEntityRemoved, filter)
   end
 
   -- Register load handler

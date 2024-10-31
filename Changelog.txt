@@ -1,3 +1,8 @@
+Version: 0.0.2
+Date: 2024-10-31
+Features:
+  - Added 2 types of logistic fridges (passive provider, requester)
+-------------------------------------------------------------------------------------------------------------
 Version: 0.0.1
 Date: 2024-10-30
 Features:
