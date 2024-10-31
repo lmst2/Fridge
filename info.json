@@ -1,0 +1,11 @@
+{
+  "name": "Fridge",
+  "version": "0.0.1",
+  "title": "Fridge",
+  "author": "LightningMaster",
+  "contact": "",
+  "homepage": "",
+  "description": "Having produced argicultural science pack spoiled? No worries! This mod can cover you up! Adds a fridge chest that slows down the spoil time of items inside it by 20 times.",
+  "factorio_version": "2.0",
+  "dependencies": ["base >= 2.0.2", "?space-age"]
+}

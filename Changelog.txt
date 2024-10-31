@@ -1,0 +1,4 @@
+Version: 0.0.1
+Date: 2024-10-30
+Features:
+  - Adds a fridge entity that slows down the spoil time of items inside it by 20 times.
