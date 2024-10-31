@@ -1,9 +1,21 @@
+---------------------------------------------------------------------------------------------------
+Version: 0.0.3
+  Categories:
+    - Features
+  Date: 2024-10-31:
+  Changes:
+    - Added a big freezer warehouse to the late game tech tree whitch you can compeletly stop the spoil of items inside it
+---------------------------------------------------------------------------------------------------
 Version: 0.0.2
-Date: 2024-10-31
-Features:
-  - Added 2 types of logistic fridges (passive provider, requester)
--------------------------------------------------------------------------------------------------------------
+  Categories:
+    - Features
+  Date: 2024-10-31:
+  Changes:
+    - Added 2 types of logistic fridges (passive provider, requester)
+---------------------------------------------------------------------------------------------------
 Version: 0.0.1
-Date: 2024-10-30
-Features:
-  - Adds a fridge entity that slows down the spoil time of items inside it by 20 times.
+  Categories:
+    - Features
+  Date: 2024-10-30:
+  Changes:
+    - Adds a fridge entity that slows down the spoil time of items inside it by 20 times.
