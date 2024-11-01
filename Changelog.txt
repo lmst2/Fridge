@@ -1,4 +1,11 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.0.5
+  Categories:
+    - Bug Fixes
+  Date: 2024-11-01:
+  Changes:
+    - Fixed the bug that causing the crash when putting a newly produced item with its spoil percent is 100%
+---------------------------------------------------------------------------------------------------
 Version: 0.0.4
   Categories:
     - Bug Fixes
