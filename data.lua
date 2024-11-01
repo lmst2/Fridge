@@ -169,6 +169,7 @@ power_proxy.door_animation_up = nil  -- 移除门动画
 power_proxy.door_animation_down = nil  -- 移除门动画
 power_proxy.recharging_animation = nil  -- 移除充电动画
 power_proxy.spawn_and_station_height = 0  -- 设置高度为0
+power_proxy.next_upgrade = nil  -- 移除升级选项
 if mods["space-age"] then
   power_proxy.surface_conditions = {}
 end

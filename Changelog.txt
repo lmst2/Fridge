@@ -1,4 +1,11 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.0.4
+  Categories:
+    - Bug Fixes
+  Date: 2024-11-01:
+  Changes:
+    - Fixed startup error showing entity prototype "warehouse-power-proxy" (roboport): next_upgrade can't be set when flag 'not-upgradable' is set.
+---------------------------------------------------------------------------------------------------
 Version: 0.0.3
   Categories:
     - Features
