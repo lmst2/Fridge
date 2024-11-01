@@ -54,7 +54,7 @@ local function check_warehouse_power()
         local inv = warehouse.get_inventory(defines.inventory.chest)
         for i=1, #inv do
           local itemStack = inv[i]
-          if itemStack and itemStack.valid_for_read and itemStack.spoil_tick > 0 and itemStack.spoil_percent < 99 then
+          if itemStack and itemStack.valid_for_read and itemStack.spoil_tick > 0 and itemStack.spoil_percent > 0.01 then
             itemStack.spoil_tick = itemStack.spoil_tick + 80
           end
         end
@@ -74,9 +74,18 @@ local function check_fridges()
     -- Check each slot in the fridge
     for i=1, #inv do
       local itemStack = inv[i]
-      if itemStack and itemStack.valid_for_read and itemStack.spoil_tick > 0 and itemStack.spoil_percent < 99 then
+      if itemStack and itemStack.valid_for_read and itemStack.spoil_tick > 0 and itemStack.spoil_percent > 0.005 then
         -- Extend spoil time by 19 ticks if item can spoil
         itemStack.spoil_tick = itemStack.spoil_tick + 19
+        -- game.print("-------------------")
+        -- game.print("fridge working")
+        -- game.print("item name " ..itemStack.name)
+        -- game.print("spoil percent " ..itemStack.spoil_percent)
+      elseif itemStack and itemStack.valid_for_read then
+        -- game.print("-------------------")
+        -- game.print("fridge stopping")
+        -- game.print("item name " ..itemStack.name)
+        -- game.print("spoil percent " ..itemStack.spoil_percent)
       end
     end
   end
