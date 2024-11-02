@@ -144,6 +144,8 @@ data:extend({
 -- 创建隐藏的电力实体，使用 roboport 作为基础
 local power_proxy = table.deepcopy(data.raw["roboport"]["roboport"])
 power_proxy.name = "warehouse-power-proxy"
+power_proxy.icon = "__Fridge__/graphics/icon/refrigerater.png"
+power_proxy.icon_size = 64
 power_proxy.energy_source =
     {
       type = "electric",
@@ -255,7 +257,7 @@ data:extend({
 data:extend({
   {
     type = "technology",
-    name = "preservation-warehouse",
+    name = "preservation-warehouse-tech",
     icon = "__Fridge__/graphics/icon/refrigerater.png",
     icon_size = 64,
     prerequisites = {"logistic-refrigerater", "cryogenic-science-pack"},
