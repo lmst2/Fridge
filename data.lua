@@ -1,16 +1,16 @@
 local vcp = table.deepcopy(data.raw.container["steel-chest"])
 vcp.type = "container"
-vcp.name = "refrigerater"
-vcp.icon = "__Fridge__/graphics/icon/refrigerater.png"
+vcp.name = "refrigerator"
+vcp.icon = "__Fridge__/graphics/icon/refrigerator.png"
 vcp.icon_size = 64
-vcp.minable.result = "refrigerater"
-vcp.order = "a[items]-c[refrigerater]"
+vcp.minable.result = "refrigerator"
+vcp.order = "a[items]-c[refrigerator]"
 vcp.picture =
 {
   layers =
   {
     {
-      filename = "__Fridge__/graphics/hr-refrigerater.png",
+      filename = "__Fridge__/graphics/hr-refrigerator.png",
       priority = "extra-high",
       width = 66,
       height = 74,
@@ -18,7 +18,7 @@ vcp.picture =
       scale = 0.5
     },
     {
-      filename = "__Fridge__/graphics/hr-refrigerater-shadow.png",
+      filename = "__Fridge__/graphics/hr-refrigerator-shadow.png",
       priority = "extra-high",
       width = 112,
       height = 46,
@@ -38,22 +38,23 @@ vcp.picture =
 -- vcp.erase_contents_when_mined = true
 vcp.logistic_mode = nil
 vcp.inventory_size = 24
+vcp.trash_inventory_size = nil
 
 data:extend({
   vcp,
   {
     type = "item",
-    name = "refrigerater",
-    icon = "__Fridge__/graphics/icon/refrigerater.png",
+    name = "refrigerator",
+    icon = "__Fridge__/graphics/icon/refrigerator.png",
     icon_size = 64,    
     subgroup = "storage",
-    order = "a[items]-c[refrigerater]",
-    place_result = "refrigerater",
+    order = "a[items]-c[refrigerator]",
+    place_result = "refrigerator",
     stack_size = 50
   },
   {
     type = "recipe",
-    name = "refrigerater",
+    name = "refrigerator",
     enabled = false,
     ingredients =
     {
@@ -63,25 +64,26 @@ data:extend({
       {type = "item", name = "uranium-fuel-cell", amount = 1},
       {type = "item", name = "plastic-bar", amount = 10}
     },
-    results = {{type = "item", name = "refrigerater", amount = 1}}
+    results = {{type = "item", name = "refrigerator", amount = 1}}
   },
 })
 
-table.insert(data.raw["technology"]["agricultural-science-pack"].effects, { type = "unlock-recipe", recipe = "refrigerater" } )
+table.insert(data.raw["technology"]["agricultural-science-pack"].effects, { type = "unlock-recipe", recipe = "refrigerator" } )
 
 local logistic_fridge_types = {
-  {name = "logistic-refrigerater-passive-provider", color = {r=0.8, g=0.2, b=0.2}, logistic_mode = "passive-provider", type = "logistic-container"},
-  {name = "logistic-refrigerater-requester", color = {r=0.2, g=0.2, b=0.8}, logistic_mode = "requester", type = "logistic-container"}
+  {name = "logistic-refrigerator-passive-provider", color = {r=0.8, g=0.2, b=0.2}, logistic_mode = "passive-provider", type = "logistic-container", trash_inventory_size = 0},
+  {name = "logistic-refrigerator-requester", color = {r=0.2, g=0.2, b=0.8}, logistic_mode = "requester", type = "logistic-container", trash_inventory_size = 10}
 }
 
 for _, fridge_type in pairs(logistic_fridge_types) do
   local logistic_fridge = table.deepcopy(vcp)
   logistic_fridge.name = fridge_type.name
   logistic_fridge.logistic_mode = fridge_type.logistic_mode
+  logistic_fridge.trash_inventory_size = fridge_type.trash_inventory_size
   logistic_fridge.minable.result = fridge_type.name
   logistic_fridge.icons = {
     {
-      icon = "__Fridge__/graphics/icon/refrigerater.png",
+      icon = "__Fridge__/graphics/icon/refrigerator.png",
       icon_size = 64,
       tint = fridge_type.color
     }
@@ -107,7 +109,7 @@ for _, fridge_type in pairs(logistic_fridge_types) do
       name = fridge_type.name,
       enabled = false,
       ingredients = {
-        {type = "item", name = "refrigerater", amount = 1},
+        {type = "item", name = "refrigerator", amount = 1},
         {type = "item", name = "processing-unit", amount = 1},
         {type = "item", name = "advanced-circuit", amount = 2}
       },
@@ -119,13 +121,13 @@ end
 data:extend({
   {
     type = "technology",
-    name = "logistic-refrigerater",
-    icon = "__Fridge__/graphics/icon/refrigerater.png",
+    name = "logistic-refrigerator",
+    icon = "__Fridge__/graphics/icon/refrigerator.png",
     icon_size = 64,
     prerequisites = {"agricultural-science-pack", "logistic-system"},
     effects = {
-      {type = "unlock-recipe", recipe = "logistic-refrigerater-passive-provider"},
-      {type = "unlock-recipe", recipe = "logistic-refrigerater-requester"}
+      {type = "unlock-recipe", recipe = "logistic-refrigerator-passive-provider"},
+      {type = "unlock-recipe", recipe = "logistic-refrigerator-requester"}
     },
     unit = {
       count = 200,
@@ -144,7 +146,7 @@ data:extend({
 -- 创建隐藏的电力实体，使用 roboport 作为基础
 local power_proxy = table.deepcopy(data.raw["roboport"]["roboport"])
 power_proxy.name = "warehouse-power-proxy"
-power_proxy.icon = "__Fridge__/graphics/icon/refrigerater.png"
+power_proxy.icon = "__Fridge__/graphics/icon/refrigerator.png"
 power_proxy.icon_size = 64
 power_proxy.energy_source =
     {

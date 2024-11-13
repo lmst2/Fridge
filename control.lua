@@ -181,9 +181,9 @@ do
     for _, surface in pairs(game.surfaces) do
       -- Find and register fridges
       local chests = surface.find_entities_filtered{ name = {
-        "refrigerater", 
-        "logistic-refrigerater-passive-provider", 
-        "logistic-refrigerater-requester"
+        "refrigerator", 
+        "logistic-refrigerator-passive-provider", 
+        "logistic-refrigerator-requester"
       } }
       for _, chest in pairs(chests) do
         table.insert(storage.Fridges, chest)
@@ -209,9 +209,9 @@ do
   -- Sets up all event handlers for fridge creation, removal and updates
   local function init_events()
     local filter = {
-      { filter="name", name="refrigerater" },
-      { filter="name", name="logistic-refrigerater-passive-provider"},
-      { filter="name", name="logistic-refrigerater-requester"},
+      { filter="name", name="refrigerator" },
+      { filter="name", name="logistic-refrigerator-passive-provider"},
+      { filter="name", name="logistic-refrigerator-requester"},
       { filter="name", name="preservation-warehouse"}
     }
     script.on_event(defines.events.on_built_entity, OnEntityCreated, filter)

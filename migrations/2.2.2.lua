@@ -1,7 +1,7 @@
 for i, force in pairs(game.forces) do
   if force.technologies["agricultural-science-pack"].researched then
-    force.recipes["refrigerater"].enabled = true
+    force.recipes["refrigerator"].enabled = true
   else
-    force.recipes["refrigerater"].enabled = false
+    force.recipes["refrigerator"].enabled = false
   end
 end

@@ -1,4 +1,11 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.0.9
+  Categories:
+    - Features
+  Date: 2024-11-13:
+  Changes:
+    - Merge a pr witch add 10 trash slots to the requester fridge credit by @Retagin
+---------------------------------------------------------------------------------------------------
 Version: 0.0.8
   Categories:
     - Graphics
