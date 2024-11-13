@@ -38,6 +38,7 @@ vcp.picture =
 -- vcp.erase_contents_when_mined = true
 vcp.logistic_mode = nil
 vcp.inventory_size = 24
+vcp.trash_inventory_size = nil
 
 data:extend({
   vcp,
@@ -70,14 +71,15 @@ data:extend({
 table.insert(data.raw["technology"]["agricultural-science-pack"].effects, { type = "unlock-recipe", recipe = "refrigerater" } )
 
 local logistic_fridge_types = {
-  {name = "logistic-refrigerater-passive-provider", color = {r=0.8, g=0.2, b=0.2}, logistic_mode = "passive-provider", type = "logistic-container"},
-  {name = "logistic-refrigerater-requester", color = {r=0.2, g=0.2, b=0.8}, logistic_mode = "requester", type = "logistic-container"}
+  {name = "logistic-refrigerater-passive-provider", color = {r=0.8, g=0.2, b=0.2}, logistic_mode = "passive-provider", type = "logistic-container", trash_inventory_size = 0},
+  {name = "logistic-refrigerater-requester", color = {r=0.2, g=0.2, b=0.8}, logistic_mode = "requester", type = "logistic-container", trash_inventory_size = 10}
 }
 
 for _, fridge_type in pairs(logistic_fridge_types) do
   local logistic_fridge = table.deepcopy(vcp)
   logistic_fridge.name = fridge_type.name
   logistic_fridge.logistic_mode = fridge_type.logistic_mode
+  logistic_fridge.trash_inventory_size = fridge_type.trash_inventory_size
   logistic_fridge.minable.result = fridge_type.name
   logistic_fridge.icons = {
     {
