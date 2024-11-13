@@ -1,10 +1,11 @@
 ---------------------------------------------------------------------------------------------------
 Version: 0.0.9
   Categories:
-    - Features
+    - Features, Bug Fixes
   Date: 2024-11-13:
   Changes:
     - Merge a pr witch add 10 trash slots to the requester fridge credit by @Retagin
+    - Fixed the bug that inserter can't interact with warehouse
 ---------------------------------------------------------------------------------------------------
 Version: 0.0.8
   Categories:
