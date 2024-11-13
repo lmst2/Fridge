@@ -38,7 +38,6 @@ vcp.picture =
 -- vcp.erase_contents_when_mined = true
 vcp.logistic_mode = nil
 vcp.inventory_size = 24
-vcp.trash_inventory_size = nil
 
 data:extend({
   vcp,
@@ -71,15 +70,14 @@ data:extend({
 table.insert(data.raw["technology"]["agricultural-science-pack"].effects, { type = "unlock-recipe", recipe = "refrigerater" } )
 
 local logistic_fridge_types = {
-  {name = "logistic-refrigerater-passive-provider", color = {r=0.8, g=0.2, b=0.2}, logistic_mode = "passive-provider", type = "logistic-container", trash_inventory_size = 0},
-  {name = "logistic-refrigerater-requester", color = {r=0.2, g=0.2, b=0.8}, logistic_mode = "requester", type = "logistic-container", trash_inventory_size = 10}
+  {name = "logistic-refrigerater-passive-provider", color = {r=0.8, g=0.2, b=0.2}, logistic_mode = "passive-provider", type = "logistic-container"},
+  {name = "logistic-refrigerater-requester", color = {r=0.2, g=0.2, b=0.8}, logistic_mode = "requester", type = "logistic-container"}
 }
 
 for _, fridge_type in pairs(logistic_fridge_types) do
   local logistic_fridge = table.deepcopy(vcp)
   logistic_fridge.name = fridge_type.name
   logistic_fridge.logistic_mode = fridge_type.logistic_mode
-  logistic_fridge.trash_inventory_size = fridge_type.trash_inventory_size
   logistic_fridge.minable.result = fridge_type.name
   logistic_fridge.icons = {
     {
@@ -206,25 +204,34 @@ power_proxy.base = {
 -- 创建大型仓库
 local warehouse = table.deepcopy(data.raw.container["steel-chest"])
 warehouse.name = "preservation-warehouse"
-warehouse.icon = "__Fridge__/graphics/icon/refrigerater.png"
-warehouse.icon_size = 64
+warehouse.icon = "__Fridge__/graphics/icon/large-chest.png"
+warehouse.icon_size = 256
 warehouse.minable.result = "preservation-warehouse"
 warehouse.inventory_size = 200
 warehouse.picture = {
   layers = {
     {
-      filename = "__Fridge__/graphics/hr-refrigerater.png",
+      filename = "__Fridge__/graphics/large-chest-front.png",
       priority = "extra-high",
-      width = 66,
-      height = 74,
-      shift = util.by_pixel(0, -2),
-      scale = 3 -- 放大一倍
+      width = 1024,
+      height = 1024,
+      shift = util.by_pixel(0, -30),
+      scale = 0.25 -- 放大一倍
+    },
+    {
+      filename = "__Fridge__/graphics/large-chest-shadow.png",
+      priority = "extra-high",
+      width = 1024,
+      height = 600,
+      shift = util.by_pixel(64, 1.5),
+      draw_as_shadow = true,
+      scale = 0.31
     }
   }
 }
 -- 修改碰撞盒和选择盒大小
 warehouse.collision_box = {{-2.8, -2.8}, {2.8, 2.8}}
-warehouse.selection_box = {{-3, -3}, {3, 3}}
+warehouse.selection_box = {{-3, -2.8}, {3, 3}}
 
 data:extend({
   power_proxy,
@@ -232,8 +239,8 @@ data:extend({
   {
     type = "item",
     name = "preservation-warehouse",
-    icon = "__Fridge__/graphics/icon/refrigerater.png",
-    icon_size = 64,
+    icon = "__Fridge__/graphics/icon/large-chest.png",
+    icon_size = 256,
     subgroup = "storage",
     order = "a[items]-d[preservation-warehouse]",
     place_result = "preservation-warehouse",
@@ -260,8 +267,8 @@ data:extend({
   {
     type = "technology",
     name = "preservation-warehouse-tech",
-    icon = "__Fridge__/graphics/icon/refrigerater.png",
-    icon_size = 64,
+    icon = "__Fridge__/graphics/icon/large-chest.png",
+    icon_size = 256,
     prerequisites = {"logistic-refrigerater", "cryogenic-science-pack"},
     unit = {
       count = 1500,
