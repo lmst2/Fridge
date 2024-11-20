@@ -1,4 +1,23 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.0.11
+  Categories:
+    - Bug Fixes
+  Date: 2024-11-20:
+  Changes:
+    - Fixed when other mode removes the warehouse entity, the fake power proxy remains on the map.
+---------------------------------------------------------------------------------------------------
+Version: 0.0.10
+  Categories:
+    - Features, Bug Fixes
+  Date: 2024-11-20:
+  Changes:
+    - Features:
+      - Added a buffer logistic fridge
+      - new implementation of how to cap the spoil time of items inside the fridge to its max value
+    - Bug Fixes:
+      - Fixed the crash when putting newly produced items with 100% spoil percent into the fridge
+      - Fixed when other mods remove the fridge entity without sending any notice event
+---------------------------------------------------------------------------------------------------
 Version: 0.0.9
   Categories:
     - Features, Bug Fixes

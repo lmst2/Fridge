@@ -1,3 +1,10 @@
+local small_chest_capacity = settings.startup["fridge-small-chest-capacity"].value
+local large_chest_capacity = settings.startup["fridge-large-chest-capacity"].value
+local power_consumption = settings.startup["fridge-power-consumption"].value
+local power_capacity = settings.startup["fridge-power-capacity"].value
+
+
+
 local vcp = table.deepcopy(data.raw.container["steel-chest"])
 vcp.type = "container"
 vcp.name = "refrigerater"
@@ -37,7 +44,7 @@ vcp.picture =
 -- vcp.gui_mode = "none" -- all, none, admins
 -- vcp.erase_contents_when_mined = true
 vcp.logistic_mode = nil
-vcp.inventory_size = 24
+vcp.inventory_size = small_chest_capacity
 vcp.trash_inventory_size = nil
 
 data:extend({
@@ -72,7 +79,8 @@ table.insert(data.raw["technology"]["agricultural-science-pack"].effects, { type
 
 local logistic_fridge_types = {
   {name = "logistic-refrigerater-passive-provider", color = {r=0.8, g=0.2, b=0.2}, logistic_mode = "passive-provider", type = "logistic-container", trash_inventory_size = 0},
-  {name = "logistic-refrigerater-requester", color = {r=0.2, g=0.2, b=0.8}, logistic_mode = "requester", type = "logistic-container", trash_inventory_size = 10}
+  {name = "logistic-refrigerater-requester", color = {r=0.2, g=0.2, b=0.8}, logistic_mode = "requester", type = "logistic-container", trash_inventory_size = 10},
+  {name = "logistic-refrigerater-buffer", color = {r=0.2, g=0.8, b=0.2}, logistic_mode = "buffer", type = "logistic-container", trash_inventory_size = 10}
 }
 
 for _, fridge_type in pairs(logistic_fridge_types) do
@@ -127,7 +135,8 @@ data:extend({
     prerequisites = {"agricultural-science-pack", "logistic-system"},
     effects = {
       {type = "unlock-recipe", recipe = "logistic-refrigerater-passive-provider"},
-      {type = "unlock-recipe", recipe = "logistic-refrigerater-requester"}
+      {type = "unlock-recipe", recipe = "logistic-refrigerater-requester"},
+      {type = "unlock-recipe", recipe = "logistic-refrigerater-buffer"}
     },
     unit = {
       count = 200,
@@ -146,17 +155,17 @@ data:extend({
 -- 创建隐藏的电力实体，使用 roboport 作为基础
 local power_proxy = table.deepcopy(data.raw["roboport"]["roboport"])
 power_proxy.name = "warehouse-power-proxy"
-power_proxy.icon = "__Fridge__/graphics/icon/refrigerater.png"
-power_proxy.icon_size = 64
+power_proxy.icon = "__Fridge__/graphics/icon/large-chest.png"
+power_proxy.icon_size = 256
 power_proxy.energy_source =
     {
       type = "electric",
       usage_priority = "secondary-input",
-      input_flow_limit = "40MW",
-      buffer_capacity = "3GJ"
+      input_flow_limit = (3 * power_consumption).."MW",
+      buffer_capacity = power_capacity.."MJ"
     }
-power_proxy.recharge_minimum = "120MJ"
-power_proxy.energy_usage = "10MW"
+power_proxy.recharge_minimum = (power_capacity * 0.05).."MJ"
+power_proxy.energy_usage = power_consumption.."MW"
 power_proxy.charging_energy = "0W"  -- 禁用机器人充电
 power_proxy.radar_range = 0  -- 禁用雷达范围
 power_proxy.logistics_radius = 0  -- 禁用物流范围
@@ -180,6 +189,7 @@ end
 
 power_proxy.selection_box = {{-0.3, -0.3}, {0.3, 0.3}}
 power_proxy.collision_box = {{-0.3, -0.3}, {0.3, 0.3}}
+power_proxy.collision_mask = {layers = {}}
 power_proxy.flags = {
   "not-blueprintable", 
   "not-deconstructable", 
@@ -194,6 +204,7 @@ power_proxy.base = {
   width = 1,
   height = 1
 }
+power_proxy.selection_priority = 1
 
 -- 创建大型仓库
 local warehouse = table.deepcopy(data.raw.container["steel-chest"])
@@ -203,7 +214,7 @@ warehouse.type = "container"
 warehouse.icon = "__Fridge__/graphics/icon/large-chest.png"
 warehouse.icon_size = 256
 warehouse.minable = {mining_time = 6, result = "preservation-warehouse"}
-warehouse.inventory_size = 200
+warehouse.inventory_size = large_chest_capacity
 warehouse.picture = {
   layers = {
     {
