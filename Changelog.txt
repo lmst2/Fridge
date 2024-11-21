@@ -1,4 +1,17 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.0.12
+  Categories:
+    - Bug Fixes, Features
+  Date: 2024-11-20:
+  Changes:
+    - Bug Fixs:
+      - Fixed buffer logistic fridge not working
+    - Features:
+      - Adds startup settings for frige and warehouse campacity
+      - Adds startup settings for warehouse power usage and power storage (ability to continue working for a peroid of time during power outage)
+      - Adds run-time settings for freezing rate i.e. to adjust how slow the fridge slow down the spoil rate.
+      - Adds aditional locales, now we have: de, en, es, fr, it, ja, ko, pl, pt-BR, ru, zh-CN
+---------------------------------------------------------------------------------------------------
 Version: 0.0.11
   Categories:
     - Bug Fixes
