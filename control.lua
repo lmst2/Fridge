@@ -1,9 +1,7 @@
 --- Fridge mod control script
 -- This mod adds refrigeraters that slow down item spoilage by extending spoil time
 -- @module control
-
 local freeze_rates = settings.global["fridge-freeze-rate"].value
-
 --- Helper function to remove an item from a table or dictionary
 -- @function remove_item
 -- @param tbl The input table or dictionary
@@ -97,11 +95,8 @@ end
 -- @field event.tick Current game tick
 -- @field storage.tick Counter for timing fridge updates
 local function on_tick(event)
-	-- if storage.tick >= 81 then 
-	-- 	storage.tick = 1
-	-- 	-- 每80 ticks检查一次仓库电力
-	-- 	check_warehouse_power()
-	-- perform spoil time extension every 20 ticks (0.33s)
+  
+
   if freeze_rates == 1 then return end
 
   if freeze_rates < 10 then -- avoiding hurt too much of ups
@@ -113,6 +108,7 @@ local function on_tick(event)
   end
 
   if game.tick%80 == 0 then
+    freeze_rates = settings.global["fridge-freeze-rate"].value
     check_warehouse_power()
   end
 end
@@ -194,7 +190,8 @@ do
       local chests = surface.find_entities_filtered{ name = {
         "refrigerater", 
         "logistic-refrigerater-passive-provider", 
-        "logistic-refrigerater-requester"
+        "logistic-refrigerater-requester",
+        "logistic-refrigerater-buffer"
       } }
       for _, chest in pairs(chests) do
         storage.Fridges[chest.unit_number] = chest
@@ -223,6 +220,7 @@ do
       { filter="name", name="refrigerater" },
       { filter="name", name="logistic-refrigerater-passive-provider"},
       { filter="name", name="logistic-refrigerater-requester"},
+      { filter="name", name="logistic-refrigerater-buffer"},
       { filter="name", name="preservation-warehouse"}
     }
     script.on_event(defines.events.on_built_entity, OnEntityCreated, filter)
