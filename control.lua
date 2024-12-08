@@ -1,7 +1,7 @@
 --- Fridge mod control script
--- This mod adds refrigerators that slow down item spoilage by extending spoil time
+-- This mod adds refrigeraters that slow down item spoilage by extending spoil time
 -- @module control
-
+local freeze_rates = settings.global["fridge-freeze-rate"].value
 --- Helper function to remove an item from a table or dictionary
 -- @function remove_item
 -- @param tbl The input table or dictionary
@@ -36,7 +36,6 @@ end
 -- @field storage.Fridges Table storing all fridge entities
 -- @field storage.Warehouses Table storing all warehouse entities
 local function init_storages()
-	storage.tick = storage.tick or 0
   storage.Fridges = storage.Fridges or {}
   storage.Warehouses = storage.Warehouses or {}
 end
@@ -45,50 +44,49 @@ end
 -- @function check_warehouse_power
 -- @field storage.Warehouses Table storing all warehouse entities
 local function check_warehouse_power()
-  for warehouse, proxy in pairs(storage.Warehouses) do
-    if warehouse.valid and proxy.valid then
+  for unit_number,  warehouse_dict in pairs(storage.Warehouses) do
+    local warehouse = warehouse_dict.warehouse
+    local proxy = warehouse_dict.proxy
+    if warehouse and warehouse.valid and proxy and proxy.valid then
       -- game.print("warehouse energy: " .. serpent.block(proxy.energy))
       -- game.print("warehouse electric_buffer_size: " .. serpent.block(proxy.electric_buffer_size))
       
-      if proxy.energy > 0 then
+      if proxy.energy > 1200000 then
         local inv = warehouse.get_inventory(defines.inventory.chest)
         for i=1, #inv do
           local itemStack = inv[i]
-          if itemStack and itemStack.valid_for_read and itemStack.spoil_tick > 0 and itemStack.spoil_percent > 0.01 then
-            itemStack.spoil_tick = itemStack.spoil_tick + 80
+          if itemStack and itemStack.valid_for_read and itemStack.spoil_tick > 0 then
+            itemStack.spoil_tick = math.min(itemStack.spoil_tick + 80, game.tick + itemStack.prototype.get_spoil_ticks(itemStack.quality) - 3)
           end
         end
       end
     else
-      storage.Warehouses = remove_item(storage.Warehouses, warehouse)
+      proxy.destroy()
+      storage.Warehouses = remove_item(storage.Warehouses, unit_number)
+      -- game.print("warehouse is removed unexpectedly, removing it from watch list, id: "..unit_number)
     end
   end
 end
 
 --- Check fridges and extend spoil time for items inside
 -- @function check_fridges
-local function check_fridges()
-  -- Process each fridge
-  for _, chest in pairs(storage.Fridges) do
-    local inv = chest.get_inventory(defines.inventory.chest)
-    -- Check each slot in the fridge
-    for i=1, #inv do
-      local itemStack = inv[i]
-      if itemStack and itemStack.valid_for_read and itemStack.spoil_tick > 0 and itemStack.spoil_percent > 0.005 then
-        -- Extend spoil time by 19 ticks if item can spoil
-        itemStack.spoil_tick = itemStack.spoil_tick + 19
-        -- game.print("-------------------")
-        -- game.print("fridge working")
-        -- game.print("item name " ..itemStack.name)
-        -- game.print("spoil percent " ..itemStack.spoil_percent)
-      elseif itemStack and itemStack.valid_for_read then
-        -- game.print("-------------------")
-        -- game.print("fridge stopping")
-        -- game.print("item name " ..itemStack.name)
-        -- game.print("spoil percent " ..itemStack.spoil_percent)
-      end
+local function check_fridges(recover_number)
+    -- Process each fridge
+    for unit_number, chest in pairs(storage.Fridges) do
+        if chest and chest.valid then
+            local inv = chest.get_inventory(defines.inventory.chest)
+            -- Check each slot in the fridge
+            for i=1, #inv do
+                local itemStack = inv[i]
+                if itemStack and itemStack.valid_for_read and itemStack.spoil_tick > 0 then
+                    itemStack.spoil_tick = math.min(itemStack.spoil_tick + recover_number, game.tick + itemStack.prototype.get_spoil_ticks(itemStack.quality) - 3)
+                end
+            end
+        else
+            storage.Fridges = remove_item(storage.Fridges, unit_number)
+            -- game.print("fridge is removed unexpectedly, removing it from watch list, id: "..unit_number)
+        end
     end
-  end
 end
 
 --- Main tick handler that extends spoil time for items in fridges
@@ -97,15 +95,22 @@ end
 -- @field event.tick Current game tick
 -- @field storage.tick Counter for timing fridge updates
 local function on_tick(event)
-	if storage.tick >= 81 then 
-		storage.tick = 1
-		-- 每80 ticks检查一次仓库电力
-		check_warehouse_power()
-	-- perform spoil time extension every 20 ticks (0.33s)
-	elseif storage.tick%20 == 0 then
-    check_fridges()
-	end
-  storage.tick = storage.tick + 1
+  
+
+  if freeze_rates == 1 then return end
+
+  if freeze_rates < 10 then -- avoiding hurt too much of ups
+    if game.tick%(10 * freeze_rates) == 0 then
+      check_fridges((freeze_rates - 1) * 10)
+    end
+	elseif game.tick%freeze_rates == 0 then
+    check_fridges(freeze_rates - 1)
+  end
+
+  if game.tick%80 == 0 then
+    freeze_rates = settings.global["fridge-freeze-rate"].value
+    check_warehouse_power()
+  end
 end
 
 ---- Runtime Events ----
@@ -126,11 +131,11 @@ local function OnEntityCreated(event)
         force = entity.force
       }
       if proxy then
-        storage.Warehouses[entity] = proxy
+        storage.Warehouses[entity.unit_number] = {warehouse = entity, proxy = proxy}
       end
     else
-      -- 普通冰箱
-      table.insert(storage.Fridges, entity)
+      -- 普通冰箱，使用 unit_number 作为键
+      storage.Fridges[entity.unit_number] = entity
     end
   end
 end
@@ -145,17 +150,19 @@ local function OnEntityRemoved(event)
     if entity.name == "preservation-warehouse" then
       -- remove warehouse from storage
       local filtered_warehouses = {}
-      for warehouse, proxy in pairs(storage.Warehouses) do
+      for unit_number, warehouse_dict in pairs(storage.Warehouses) do
+        local warehouse = warehouse_dict.warehouse
+        local proxy = warehouse_dict.proxy
         if warehouse == entity then
           proxy.destroy()
         else
-          filtered_warehouses[warehouse] = proxy
+          filtered_warehouses[unit_number] = warehouse_dict
         end
       end
       storage.Warehouses = filtered_warehouses
     else
       -- remove fridge from storage
-      storage.Fridges = remove_item(storage.Fridges, entity)
+      storage.Fridges = remove_item(storage.Fridges, entity.unit_number)
     end
   end
 end
@@ -183,10 +190,11 @@ do
       local chests = surface.find_entities_filtered{ name = {
         "refrigerater", 
         "logistic-refrigerater-passive-provider", 
-        "logistic-refrigerater-requester"
+        "logistic-refrigerater-requester",
+        "logistic-refrigerater-buffer"
       } }
       for _, chest in pairs(chests) do
-        table.insert(storage.Fridges, chest)
+        storage.Fridges[chest.unit_number] = chest
       end
 
       -- Find and register warehouses
@@ -198,7 +206,7 @@ do
           force = warehouse.force
         }
         if proxy then
-          storage.Warehouses[warehouse] = proxy
+          storage.Warehouses[warehouse.unit_number] = {warehouse = warehouse, proxy = proxy}
         end
       end
     end
@@ -212,15 +220,19 @@ do
       { filter="name", name="refrigerater" },
       { filter="name", name="logistic-refrigerater-passive-provider"},
       { filter="name", name="logistic-refrigerater-requester"},
+      { filter="name", name="logistic-refrigerater-buffer"},
       { filter="name", name="preservation-warehouse"}
     }
     script.on_event(defines.events.on_built_entity, OnEntityCreated, filter)
+    script.on_event(defines.events.on_entity_cloned, OnEntityCreated, filter)
     script.on_event(defines.events.on_robot_built_entity, OnEntityCreated, filter)
+    script.on_event(defines.events.on_space_platform_built_entity, OnEntityCreated, filter)
     script.on_event(defines.events.script_raised_built, OnEntityCreated, filter)
     script.on_event(defines.events.script_raised_revive, OnEntityCreated, filter)
     script.on_event(defines.events.on_tick, on_tick)
     script.on_event(defines.events.on_player_mined_entity, OnEntityRemoved, filter)
     script.on_event(defines.events.on_robot_mined_entity, OnEntityRemoved, filter)
+    script.on_event(defines.events.on_space_platform_mined_entity, OnEntityRemoved, filter)
     script.on_event(defines.events.on_entity_died, OnEntityRemoved, filter)
     script.on_event(defines.events.script_raised_destroy, OnEntityRemoved, filter)
   end

@@ -1,4 +1,51 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.0.12
+  Categories:
+    - Bug Fixes, Features
+  Date: 2024-11-20:
+  Changes:
+    - Bug Fixs:
+      - Fixed buffer logistic fridge not working
+    - Features:
+      - Adds startup settings for frige and warehouse campacity
+      - Adds startup settings for warehouse power usage and power storage (ability to continue working for a peroid of time during power outage)
+      - Adds run-time settings for freezing rate i.e. to adjust how slow the fridge slow down the spoil rate.
+      - Adds aditional locales, now we have: de, en, es, fr, it, ja, ko, pl, pt-BR, ru, zh-CN
+---------------------------------------------------------------------------------------------------
+Version: 0.0.11
+  Categories:
+    - Bug Fixes
+  Date: 2024-11-20:
+  Changes:
+    - Fixed when other mode removes the warehouse entity, the fake power proxy remains on the map.
+---------------------------------------------------------------------------------------------------
+Version: 0.0.10
+  Categories:
+    - Features, Bug Fixes
+  Date: 2024-11-20:
+  Changes:
+    - Features:
+      - Added a buffer logistic fridge
+      - new implementation of how to cap the spoil time of items inside the fridge to its max value
+    - Bug Fixes:
+      - Fixed the crash when putting newly produced items with 100% spoil percent into the fridge
+      - Fixed when other mods remove the fridge entity without sending any notice event
+---------------------------------------------------------------------------------------------------
+Version: 0.0.9
+  Categories:
+    - Features, Bug Fixes
+  Date: 2024-11-13:
+  Changes:
+    - Merge a pr witch add 10 trash slots to the requester fridge credit by @Retagin
+    - Fixed the bug that inserter can't interact with warehouse
+---------------------------------------------------------------------------------------------------
+Version: 0.0.8
+  Categories:
+    - Graphics
+  Date: 2024-11-09:
+  Changes:
+    - Add new, advanced graphics for freezer warehouse
+---------------------------------------------------------------------------------------------------
 Version: 0.0.7
   Categories:
     - Optimization
