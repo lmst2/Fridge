@@ -1,3 +1,6 @@
+# Special Files
+pack_project.ps1
+
 # Compiled Lua sources
 luac.out
 

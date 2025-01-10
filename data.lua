@@ -3,7 +3,11 @@ local large_chest_capacity = settings.startup["fridge-large-chest-capacity"].val
 local power_consumption = settings.startup["fridge-power-consumption"].value
 local power_capacity = settings.startup["fridge-power-capacity"].value
 
-
+-- mod settings
+local key_enrgy = "uranium-fuel-cell"
+if mods["Factorio-Tirberium"] then
+  key_enrgy = "tiberium-fuel-cell"
+end
 
 local vcp = table.deepcopy(data.raw.container["steel-chest"])
 vcp.type = "container"
@@ -68,7 +72,7 @@ data:extend({
       {type = "item", name = "steel-chest", amount = 1},
       {type = "item", name = "electric-engine-unit", amount = 1},
       {type = "item", name = "processing-unit", amount = 1},
-      {type = "item", name = "uranium-fuel-cell", amount = 1},
+      {type = "item", name = key_enrgy, amount = 1},
       {type = "item", name = "plastic-bar", amount = 10}
     },
     results = {{type = "item", name = "refrigerater", amount = 1}}
