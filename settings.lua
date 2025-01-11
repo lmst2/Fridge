@@ -19,6 +19,15 @@ data:extend({
     },
     {
         type = "int-setting",
+        name = "fridge-space-plantform-capacity",
+        setting_type = "startup",
+        default_value = 20,
+        minimum_value = 1,
+        maximum_value = 200,
+        order = "b"
+    },
+    {
+        type = "int-setting",
         name = "fridge-freeze-rate",
         setting_type = "runtime-global", 
         default_value = 20,
@@ -41,5 +50,6 @@ data:extend({
         default_value = 3000,
         minimum_value = 0.1,
         order = "e"
-    }
+    },
+    
 })

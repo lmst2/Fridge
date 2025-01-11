@@ -35,9 +35,11 @@ end
 -- @field storage.tick Counter for timing fridge updates
 -- @field storage.Fridges Table storing all fridge entities
 -- @field storage.Warehouses Table storing all warehouse entities
+-- @field storage.PlatformWarehouses Table storing all platform warehouse entities
 local function init_storages()
   storage.Fridges = storage.Fridges or {}
   storage.Warehouses = storage.Warehouses or {}
+  storage.PlatformWarehouses = storage.PlatformWarehouses or {}
 end
 
 --- Check warehouse power and extend spoil time if necessary
@@ -89,6 +91,56 @@ local function check_fridges(recover_number)
     end
 end
 
+
+local frozen_slots = {} -- Track which slots are frozen per hub
+
+local function check_platform_warehouse()
+  if not script.active_mods["space-age"] then return end
+  
+  -- Reset frozen slots tracking
+  frozen_slots = {}
+  
+  -- Process each surface that has platform warehouses
+  for surface_name, warehouses in pairs(storage.PlatformWarehouses) do
+    local surface = game.surfaces[surface_name]
+    if surface then
+      -- Calculate total bonus slots for this surface
+      local bonus_slots = #warehouses * settings.startup["fridge-space-plantform-capacity"].value
+      
+      -- Find platform hub and process items
+      local platform_hubs = surface.find_entities_filtered{
+        name = "space-platform-hub"
+      }
+      
+      for _, hub in pairs(platform_hubs) do
+        local platform_inv = hub.get_inventory(defines.inventory.hub_main)
+        if platform_inv then
+          local items_frozen = 0
+          local hub_key = string.format("%d_%d", hub.position.x, hub.position.y)
+          frozen_slots[hub_key] = {}
+          
+          -- Process items up to bonus slot limit
+          for i = 1, #platform_inv do
+            if items_frozen >= bonus_slots then break end
+            
+            local itemStack = platform_inv[i]
+            if itemStack and itemStack.valid_for_read and itemStack.spoil_tick > 0 then
+              -- Mark slot as frozen
+              frozen_slots[hub_key][i] = true
+              
+              itemStack.spoil_tick = math.min(
+                itemStack.spoil_tick + 80,
+                game.tick + itemStack.prototype.get_spoil_ticks(itemStack.quality) - 3
+              )
+              items_frozen = items_frozen + 1
+            end
+          end
+        end
+      end
+    end
+  end
+end
+
 --- Main tick handler that extends spoil time for items in fridges
 -- @function on_tick
 -- @param event Event data from Factorio runtime
@@ -110,6 +162,7 @@ local function on_tick(event)
   if game.tick%80 == 0 then
     freeze_rates = settings.global["fridge-freeze-rate"].value
     check_warehouse_power()
+    check_platform_warehouse()
   end
 end
 
@@ -124,7 +177,6 @@ local function OnEntityCreated(event)
   local entity = event.created_entity or event.entity
   if entity and entity.valid then
     if entity.name == "preservation-warehouse" then
-      -- 创建隐藏的电力实体
       local proxy = entity.surface.create_entity{
         name = "warehouse-power-proxy",
         position = entity.position,
@@ -133,8 +185,12 @@ local function OnEntityCreated(event)
       if proxy then
         storage.Warehouses[entity.unit_number] = {warehouse = entity, proxy = proxy}
       end
+    elseif entity.name == "preservation-platform-warehouse" then
+      -- Store platform warehouses by surface name
+      local surface_name = entity.surface.name
+      storage.PlatformWarehouses[surface_name] = storage.PlatformWarehouses[surface_name] or {}
+      table.insert(storage.PlatformWarehouses[surface_name], entity)
     else
-      -- 普通冰箱，使用 unit_number 作为键
       storage.Fridges[entity.unit_number] = entity
     end
   end
@@ -148,7 +204,6 @@ local function OnEntityRemoved(event)
   local entity = event.entity
   if entity and entity.valid then
     if entity.name == "preservation-warehouse" then
-      -- remove warehouse from storage
       local filtered_warehouses = {}
       for unit_number, warehouse_dict in pairs(storage.Warehouses) do
         local warehouse = warehouse_dict.warehouse
@@ -160,8 +215,18 @@ local function OnEntityRemoved(event)
         end
       end
       storage.Warehouses = filtered_warehouses
+    elseif entity.name == "preservation-platform-warehouse" then
+      -- Remove from surface storage
+      local surface_name = entity.surface.name
+      if storage.PlatformWarehouses[surface_name] then
+        for i, warehouse in ipairs(storage.PlatformWarehouses[surface_name]) do
+          if warehouse == entity then
+            table.remove(storage.PlatformWarehouses[surface_name], i)
+            break
+          end
+        end
+      end
     else
-      -- remove fridge from storage
       storage.Fridges = remove_item(storage.Fridges, entity.unit_number)
     end
   end
@@ -210,6 +275,17 @@ do
         end
       end
     end
+
+    -- Initialize platform warehouses
+    storage.PlatformWarehouses = {}
+    for _, surface in pairs(game.surfaces) do
+      local platform_warehouses = surface.find_entities_filtered{
+        name = "preservation-platform-warehouse"
+      }
+      if #platform_warehouses > 0 then
+        storage.PlatformWarehouses[surface.name] = platform_warehouses
+      end
+    end
   end
 
   --- Register all event handlers
@@ -221,7 +297,8 @@ do
       { filter="name", name="logistic-refrigerater-passive-provider"},
       { filter="name", name="logistic-refrigerater-requester"},
       { filter="name", name="logistic-refrigerater-buffer"},
-      { filter="name", name="preservation-warehouse"}
+      { filter="name", name="preservation-warehouse"},
+      { filter="name", name="preservation-platform-warehouse" }
     }
     script.on_event(defines.events.on_built_entity, OnEntityCreated, filter)
     script.on_event(defines.events.on_entity_cloned, OnEntityCreated, filter)

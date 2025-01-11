@@ -2,6 +2,13 @@ local small_chest_capacity = settings.startup["fridge-small-chest-capacity"].val
 local large_chest_capacity = settings.startup["fridge-large-chest-capacity"].value
 local power_consumption = settings.startup["fridge-power-consumption"].value
 local power_capacity = settings.startup["fridge-power-capacity"].value
+local bouns_capacity = settings.startup["fridge-space-plantform-capacity"].value
+
+-- mod settings
+local key_enrgy = "uranium-fuel-cell"
+if mods["Factorio-Tirberium"] then
+  key_enrgy = "tiberium-fuel-cell"
+end
 
 -- mod settings
 local key_enrgy = "uranium-fuel-cell"
@@ -311,3 +318,89 @@ data:extend({
     }
   }
 })
+
+-- Add after the preservation-warehouse definition
+
+-- Create space platform warehouse
+if mods["space-age"] then
+  local space_warehouse = table.deepcopy(data.raw["cargo-bay"]["cargo-bay"])
+  space_warehouse.type = "cargo-bay"
+  space_warehouse.name = "preservation-platform-warehouse"
+  space_warehouse.icons = {
+    {
+    icon = data.raw["cargo-bay"]["cargo-bay"].icon,
+    icon_size = data.raw["cargo-bay"]["cargo-bay"].icon_size,
+    tint = {r=0.6, g=0.8, b=1.0, a=0.8}
+    }
+  }
+  -- space_warehouse.icon_size = 256
+  -- space_warehouse.graphics_set.picture.tint = {r=0.6, g=0.8, b=1.0, a=0.8}
+  -- space_warehouse.graphics_set.picture.render_layer = data.raw["cargo-bay"]["cargo-bay"].graphics_set.picture.render_layer
+
+  space_warehouse.minable = {mining_time = 8, result = "preservation-platform-warehouse"}
+  space_warehouse.inventory_size_bonus = bouns_capacity
+  -- space_warehouse.inventory_type = "with_filters_and_bar"
+  space_warehouse.surface_conditions = {}
+  -- Add cargo bay specific properties
+  -- space_warehouse.graphics_set = {
+  --   animation = {
+  --     filename = "__Fridge__/graphics/large-chest-front.png",
+  --     priority = "extra-high",
+  --     width = 1024,
+  --     height = 1024,
+  --     scale = 0.25
+  --   }
+  -- }
+  -- space_warehouse.platform_graphics_set = {
+  --   animation = {
+  --     filename = "__Fridge__/graphics/large-chest-front.png",
+  --     priority = "extra-high",
+  --     width = 1024,
+  --     height = 1024,
+  --     scale = 0.25
+  --   }
+  -- }
+  data:extend({
+    space_warehouse,
+    {
+      type = "item",
+      name = "preservation-platform-warehouse",
+      icon = data.raw["cargo-bay"]["cargo-bay"].icon, 
+      icon_size = data.raw["cargo-bay"]["cargo-bay"].icon_size,
+      tint = {r=0.6, g=0.8, b=1.0, a=0.8},
+      subgroup = "storage",
+      order = "a[items]-e[preservation-platform-warehouse]",
+      place_result = "preservation-platform-warehouse",
+      stack_size = 10
+    },
+    {
+      type = "recipe",
+      name = "preservation-platform-warehouse",
+      enabled = false,
+      ingredients = {
+        {type = "item", name = "preservation-warehouse", amount = 1},
+        {type = "item", name = "iron-plate", amount = 100}
+      },
+      results = {{type = "item", name = "preservation-platform-warehouse", amount = 1}}
+    }
+  })
+  
+  -- Add to space age technology
+  table.insert(data.raw["technology"]["space-platform"].effects,
+    {type = "unlock-recipe", recipe = "preservation-platform-warehouse"}
+  )
+end
+
+-- -- Add after other graphics definitions
+-- data:extend({
+--   {
+--     type = "sprite",
+--     name = "frozen-overlay",
+--     filename = "__Fridge__/graphics/frozen-overlay.png",
+--     priority = "extra-high",
+--     width = 32,
+--     height = 32,
+--     flags = {"icon"}
+--   }
+-- })
+
