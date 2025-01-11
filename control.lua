@@ -40,6 +40,7 @@ local function init_storages()
   storage.Fridges = storage.Fridges or {}
   storage.Warehouses = storage.Warehouses or {}
   storage.PlatformWarehouses = storage.PlatformWarehouses or {}
+  storage.Wagons = storage.Wagons or {}
 end
 
 --- Check warehouse power and extend spoil time if necessary
@@ -141,6 +142,32 @@ local function check_platform_warehouse()
   end
 end
 
+
+--- Process platform warehouses to extend spoil time of items
+-- @function check_platform_warehouse
+-- @description Checks space platform warehouses and extends spoil time for items based on bonus slots.
+-- Only runs if space-age mod is active. Tracks frozen slots per hub and applies preservation effect
+-- up to the configured capacity limit.
+local function check_wagons(recover_number)
+  -- Process each wagon's inventory
+  for _, wagon in pairs(storage.Wagons) do
+    local wagon_inv = wagon.get_inventory(defines.inventory.cargo_wagon)
+    if wagon_inv then
+      for i = 1, #wagon_inv do
+        local itemStack = wagon_inv[i]
+        if itemStack and itemStack.valid_for_read and itemStack.spoil_tick > 0 then
+          -- Extend spoil time by freeze rate
+          itemStack.spoil_tick = math.min(
+            itemStack.spoil_tick + recover_number,
+            game.tick + itemStack.prototype.get_spoil_ticks(itemStack.quality) - 3
+          )
+        end
+      end
+    end
+  end
+end
+
+
 --- Main tick handler that extends spoil time for items in fridges
 -- @function on_tick
 -- @param event Event data from Factorio runtime
@@ -154,9 +181,11 @@ local function on_tick(event)
   if freeze_rates < 10 then -- avoiding hurt too much of ups
     if game.tick%(10 * freeze_rates) == 0 then
       check_fridges((freeze_rates - 1) * 10)
+      check_wagons((freeze_rates - 1) * 10)
     end
 	elseif game.tick%freeze_rates == 0 then
     check_fridges(freeze_rates - 1)
+    check_wagons(freeze_rates - 1)
   end
 
   if game.tick%80 == 0 then
@@ -190,8 +219,10 @@ local function OnEntityCreated(event)
       local surface_name = entity.surface.name
       storage.PlatformWarehouses[surface_name] = storage.PlatformWarehouses[surface_name] or {}
       table.insert(storage.PlatformWarehouses[surface_name], entity)
-    else
+    elseif entity.name == "refrigerater" then
       storage.Fridges[entity.unit_number] = entity
+    elseif entity.name == "preservation-wagon" then
+      storage.Wagons[entity.unit_number] = entity
     end
   end
 end
@@ -226,8 +257,10 @@ local function OnEntityRemoved(event)
           end
         end
       end
-    else
+    elseif entity.name == "refrigerater" then
       storage.Fridges = remove_item(storage.Fridges, entity.unit_number)
+    elseif entity.name == "preservation-wagon" then
+      storage.Wagons = remove_item(storage.Wagons, entity.unit_number)
     end
   end
 end
@@ -240,6 +273,10 @@ do
   local function init_chests()
     -- Clear existing storage
     storage.Fridges = {}
+    storage.Warehouses = {}
+    storage.PlatformWarehouses = {}
+    storage.Wagons = {}
+
     -- Clean up old warehouse proxies
     for _, surface in pairs(game.surfaces) do
       local old_proxies = surface.find_entities_filtered{ name = "warehouse-power-proxy" }
@@ -247,7 +284,6 @@ do
         proxy.destroy()
       end
     end
-    storage.Warehouses = {}
 
     -- Initialize fridges and warehouses
     for _, surface in pairs(game.surfaces) do
@@ -274,16 +310,19 @@ do
           storage.Warehouses[warehouse.unit_number] = {warehouse = warehouse, proxy = proxy}
         end
       end
-    end
 
-    -- Initialize platform warehouses
-    storage.PlatformWarehouses = {}
-    for _, surface in pairs(game.surfaces) do
+      -- Find all platform warehouses
       local platform_warehouses = surface.find_entities_filtered{
         name = "preservation-platform-warehouse"
       }
       if #platform_warehouses > 0 then
         storage.PlatformWarehouses[surface.name] = platform_warehouses
+      end
+
+      -- Find all perservation wagons
+      local wagons = surface.find_entities_filtered{ name = "preservation-wagon" }
+      for _, wagon in pairs(wagons) do
+        storage.Wagons[wagon.unit_number] = wagon
       end
     end
   end
@@ -331,5 +370,34 @@ do
     init_chests()
     init_events()
   end)
+
+  -- -- Add GUI event handlers
+  -- script.on_event(defines.events.on_gui_opened, function(event)
+  --   local player = game.players[event.player_index]
+  --   local entity = event.entity
+    
+  --   if entity and entity.name == "space-platform-hub" then
+  --     -- Wait one tick for GUI to be created
+  --     script.on_nth_tick(1, function()
+  --       local hub_key = string.format("%d_%d", entity.position.x, entity.position.y)
+  --       local frozen = frozen_slots[hub_key] or {}
+        
+  --       -- Find inventory slots in GUI
+  --       for _, element in pairs(player.gui.screen.children) do
+  --         if element.type == "frame" and element.get_inventory then
+  --           -- Found inventory frame
+  --           for i, slot in pairs(element.children) do
+  --             if frozen[i] then
+  --               -- Add blue background to frozen slots
+  --               slot.style.background_color = {r = 0.5, g = 0.8, b = 1, a = 0.3}
+  --             end
+  --           end
+  --         end
+  --       end
+        
+  --       script.on_nth_tick(1, nil) -- Remove the handler
+  --     end)
+  --   end
+  -- end)
 
 end

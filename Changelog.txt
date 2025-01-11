@@ -1,4 +1,22 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.1.0
+  Categories:
+    - Major Updates, Bug Fixes, Features, Modifications
+  Date: 2025-1-10:
+  Changes:
+    - Bug Fixs:
+      - Fixed the crash when space-age dlc disabled
+    - Features:
+      - Add a space platform cargo bay that adds slots to space platform hub that freezes item's spoil time
+      - Add a cargo wagon that slows the spoil rate of the items inside it
+      - Add support to Tirberium mod so that the fridge use tiberium-fuel-cell instead of uranium-fuel-cell
+    - Modifications:
+      - Modifies the mod name to Cold Chain Logistics, because now we have local store, cross planet space transport, 
+        local planet railway transport, and distination warehouse storage. And I think we can proudly announce that,
+        we have the full supply chain updated with refrigeration support.
+      - Modifies the refridgetor recipe so that it becomes a indevidual technology and need reserch to unlock
+      - Modifies the technology recipe so that some requirements only shows up when space-age dlc is enabled
+---------------------------------------------------------------------------------------------------
 Version: 0.0.12
   Categories:
     - Bug Fixes, Features

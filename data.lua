@@ -10,11 +10,6 @@ if mods["Factorio-Tirberium"] then
   key_enrgy = "tiberium-fuel-cell"
 end
 
--- mod settings
-local key_enrgy = "uranium-fuel-cell"
-if mods["Factorio-Tirberium"] then
-  key_enrgy = "tiberium-fuel-cell"
-end
 
 local vcp = table.deepcopy(data.raw.container["steel-chest"])
 vcp.type = "container"
@@ -86,7 +81,30 @@ data:extend({
   },
 })
 
-table.insert(data.raw["technology"]["agricultural-science-pack"].effects, { type = "unlock-recipe", recipe = "refrigerater" } )
+data:extend({
+  {
+    type = "technology",
+    name = "refrigerater",
+    icons = {
+      {
+        icon = "__Fridge__/graphics/icon/refrigerater.png",
+        icon_size = 64
+      }
+    },
+    prerequisites = {"electric-engine", "processing-unit", "plastics"},
+    effects = {
+      {type = "unlock-recipe", recipe = "refrigerater"}
+    },
+    unit = {
+      count = 50,
+      ingredients = {
+        {"automation-science-pack", 1},
+        {"logistic-science-pack", 1}
+      },
+      time = 30
+    }
+  }
+})
 
 local logistic_fridge_types = {
   {name = "logistic-refrigerater-passive-provider", color = {r=0.8, g=0.2, b=0.2}, logistic_mode = "passive-provider", type = "logistic-container", trash_inventory_size = 0},
@@ -137,13 +155,31 @@ for _, fridge_type in pairs(logistic_fridge_types) do
   })
 end
 
+local ingredLR = {}
+if mods["space-age"] then
+  ingredLR = {
+    {"automation-science-pack", 1},
+    {"logistic-science-pack", 1},
+    {"chemical-science-pack", 1},
+    {"production-science-pack", 1},
+    {"agricultural-science-pack", 1}
+  }
+else
+  ingredLR =  {
+    {"automation-science-pack", 1},
+    {"logistic-science-pack", 1},
+    {"chemical-science-pack", 1},
+    {"production-science-pack", 1},
+  }
+end
+
 data:extend({
   {
     type = "technology",
     name = "logistic-refrigerater",
     icon = "__Fridge__/graphics/icon/refrigerater.png",
     icon_size = 64,
-    prerequisites = {"agricultural-science-pack", "logistic-system"},
+    prerequisites = {"refrigerater", "logistic-system"},
     effects = {
       {type = "unlock-recipe", recipe = "logistic-refrigerater-passive-provider"},
       {type = "unlock-recipe", recipe = "logistic-refrigerater-requester"},
@@ -151,13 +187,7 @@ data:extend({
     },
     unit = {
       count = 200,
-      ingredients = {
-        {"automation-science-pack", 1},
-        {"logistic-science-pack", 1},
-        {"chemical-science-pack", 1},
-        {"production-science-pack", 1},
-        {"agricultural-science-pack", 1}
-      },
+      ingredients = ingredLR,
       time = 30
     }
   }
@@ -289,6 +319,30 @@ data:extend({
   }
 })
 
+local ingredPW = {}
+if mods["space-age"] then
+  ingredPW = {
+    {"automation-science-pack", 1},
+    {"logistic-science-pack", 1},
+    {"chemical-science-pack", 1},
+    {"production-science-pack", 1},
+    {"utility-science-pack", 1},
+    {"space-science-pack", 1},
+    {"metallurgic-science-pack", 1},
+    {"agricultural-science-pack", 1},
+    {"electromagnetic-science-pack", 1},
+    {"cryogenic-science-pack", 1}
+  }
+else
+  ingredPW =  {
+    {"automation-science-pack", 1},
+    {"logistic-science-pack", 1},
+    {"chemical-science-pack", 1},
+    {"production-science-pack", 1},
+    {"utility-science-pack", 1},
+    {"space-science-pack", 1},
+  }
+end
 -- Add to technology tree
 data:extend({
   {
@@ -299,18 +353,7 @@ data:extend({
     prerequisites = {"logistic-refrigerater", "cryogenic-science-pack"},
     unit = {
       count = 1500,
-      ingredients = {
-        {"automation-science-pack", 1},
-        {"logistic-science-pack", 1},
-        {"chemical-science-pack", 1},
-        {"production-science-pack", 1},
-        {"utility-science-pack", 1},
-        {"space-science-pack", 1},
-        {"metallurgic-science-pack", 1},
-        {"agricultural-science-pack", 1},
-        {"electromagnetic-science-pack", 1},
-        {"cryogenic-science-pack", 1}
-      },
+      ingredients = ingredPW,
       time = 60
     },
     effects = {
@@ -328,9 +371,9 @@ if mods["space-age"] then
   space_warehouse.name = "preservation-platform-warehouse"
   space_warehouse.icons = {
     {
-    icon = data.raw["cargo-bay"]["cargo-bay"].icon,
-    icon_size = data.raw["cargo-bay"]["cargo-bay"].icon_size,
-    tint = {r=0.6, g=0.8, b=1.0, a=0.8}
+      icon = data.raw["cargo-bay"]["cargo-bay"].icon,
+      icon_size = data.raw["cargo-bay"]["cargo-bay"].icon_size,
+      tint = {r=0.6, g=0.8, b=1.0, a=0.8}
     }
   }
   -- space_warehouse.icon_size = 256
@@ -365,9 +408,13 @@ if mods["space-age"] then
     {
       type = "item",
       name = "preservation-platform-warehouse",
-      icon = data.raw["cargo-bay"]["cargo-bay"].icon, 
-      icon_size = data.raw["cargo-bay"]["cargo-bay"].icon_size,
-      tint = {r=0.6, g=0.8, b=1.0, a=0.8},
+      icons = {
+        {
+          icon = data.raw["cargo-bay"]["cargo-bay"].icon, 
+          icon_size = data.raw["cargo-bay"]["cargo-bay"].icon_size,
+          tint = {r=0.6, g=0.8, b=1.0, a=0.8},
+        }
+      },
       subgroup = "storage",
       order = "a[items]-e[preservation-platform-warehouse]",
       place_result = "preservation-platform-warehouse",
@@ -403,4 +450,79 @@ end
 --     flags = {"icon"}
 --   }
 -- })
+-- Create preservation wagon based on cargo wagon
+local preservation_wagon = table.deepcopy(data.raw["cargo-wagon"]["cargo-wagon"])
+preservation_wagon.name = "preservation-wagon"
+preservation_wagon.minable.result = "preservation-wagon"
+
+-- -- Apply freezing tint to wagon sprites
+-- for _, sprite in pairs(preservation_wagon.pictures.layers) do
+--   sprite.tint = {r=0.6, g=0.8, b=1.0, a=0.8}
+-- end
+
+-- for _, sprite in pairs(preservation_wagon.horizontal_doors.layers) do
+--   sprite.tint = {r=0.6, g=0.8, b=1.0, a=0.8}
+-- end
+
+-- for _, sprite in pairs(preservation_wagon.vertical_doors.layers) do
+--   sprite.tint = {r=0.6, g=0.8, b=1.0, a=0.8}
+-- end
+preservation_wagon.color = {r=0.6, g=0.8, b=1.0, a=0.8}
+preservation_wagon.allow_manual_color = false
+
+data:extend({
+  preservation_wagon,
+  {
+    type = "item",
+    name = "preservation-wagon", 
+    icons = {
+      {
+        icon = preservation_wagon.icon,
+        icon_size = preservation_wagon.icon_size,
+        tint = {r=0.6, g=0.8, b=1.0, a=0.8},
+      }
+    },
+    subgroup = "storage",
+    order = "a[items]-d[preservation-wagon]",
+    place_result = "preservation-wagon",
+    stack_size = 5
+  },
+  {
+    type = "recipe",
+    name = "preservation-wagon",
+    enabled = false,
+    ingredients = {
+      {type = "item", name = "cargo-wagon", amount = 1},
+      {type = "item", name = "refrigerater", amount = 2},
+      {type = "item", name = "advanced-circuit", amount = 5}
+    },
+    results = {{type = "item", name = "preservation-wagon", amount = 1}}
+  },
+  {
+    type = "technology",
+    name = "preservation-wagon",
+    icons = {
+      {
+        icon = preservation_wagon.icon,
+        icon_size = preservation_wagon.icon_size,
+        tint = {r=0.6, g=0.8, b=1.0, a=0.8},
+      }
+    },
+    prerequisites = {"railway", "refrigerater"},
+    effects = {
+      {type = "unlock-recipe", recipe = "preservation-wagon"}
+    },
+    unit = {
+      count = 100,
+      ingredients = {
+        {"automation-science-pack", 1},
+        {"logistic-science-pack", 1}, 
+        {"chemical-science-pack", 1},
+        {"production-science-pack", 1}
+      },
+      time = 30
+    }
+  }
+})
+
 
