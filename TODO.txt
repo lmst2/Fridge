@@ -1,0 +1,1 @@
+make spoil rate settings saperate for fridge, train, space platform and freezer

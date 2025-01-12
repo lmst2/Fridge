@@ -175,7 +175,7 @@ end
 -- @field storage.tick Counter for timing fridge updates
 local function on_tick(event)
   
-
+  
   if freeze_rates == 1 then return end
 
   if freeze_rates < 10 then -- avoiding hurt too much of ups
@@ -189,7 +189,6 @@ local function on_tick(event)
   end
 
   if game.tick%80 == 0 then
-    freeze_rates = settings.global["fridge-freeze-rate"].value
     check_warehouse_power()
     check_platform_warehouse()
   end
@@ -327,6 +326,12 @@ do
     end
   end
 
+
+  local function init_settings()
+    freeze_rates = settings.global["fridge-freeze-rate"].value
+  end
+
+
   --- Register all event handlers
   -- @function init_events
   -- Sets up all event handlers for fridge creation, removal and updates
@@ -353,6 +358,8 @@ do
     script.on_event(defines.events.on_space_platform_mined_entity, OnEntityRemoved, filter)
     script.on_event(defines.events.on_entity_died, OnEntityRemoved, filter)
     script.on_event(defines.events.script_raised_destroy, OnEntityRemoved, filter)
+
+    script.on_event(defines.events.on_runtime_mod_setting_changed, init_settings)
   end
 
   -- Register load handler
@@ -369,6 +376,7 @@ do
 
   -- Register configuration changed handler
   script.on_configuration_changed(function(data)
+    init_settings()
     init_chests()
     init_events()
   end)
