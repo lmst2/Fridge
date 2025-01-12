@@ -337,7 +337,9 @@ do
       { filter="name", name="logistic-refrigerater-requester"},
       { filter="name", name="logistic-refrigerater-buffer"},
       { filter="name", name="preservation-warehouse"},
-      { filter="name", name="preservation-platform-warehouse" }
+      { filter="name", name="preservation-platform-warehouse" },
+      { filter="name", name="preservation-wagon" },
+      
     }
     script.on_event(defines.events.on_built_entity, OnEntityCreated, filter)
     script.on_event(defines.events.on_entity_cloned, OnEntityCreated, filter)

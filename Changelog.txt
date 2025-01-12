@@ -1,4 +1,14 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.1.1
+  Categories:
+    - Bug Fixes, Modifications
+  Date: 2025-1-10:
+  Changes:
+    - Bug Fixs:
+      - Fixed the crash when removing peservation wangon entities
+    - Modifications:
+      - Modifies the thumbnail to fit cold chain logistics
+---------------------------------------------------------------------------------------------------
 Version: 0.1.0
   Categories:
     - Major Updates, Bug Fixes, Features, Modifications
