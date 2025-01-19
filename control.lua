@@ -1,12 +1,24 @@
---- Fridge mod control script
--- This mod adds refrigeraters that slow down item spoilage by extending spoil time
+--- Fridge Mod Control Script
+-- Implements preservation mechanics for refrigerators, warehouses, and related entities
+-- that extend item spoilage time through various cooling mechanisms.
+--
 -- @module control
+-- @author Original mod author
+-- @license MIT
+-- @copyright 2023
+
+---- Configuration ----
+
+-- Load mod settings
 local freeze_rates = settings.global["fridge-freeze-rate"].value
---- Helper function to remove an item from a table or dictionary
+
+---- Helper Functions ----
+
+--- Removes an item from a table or dictionary while preserving structure
 -- @function remove_item
--- @param tbl The input table or dictionary
--- @param item The item to be removed
--- @return A new table or dictionary without the specified item
+-- @param tbl The input table or dictionary to modify
+-- @param item The key or value to remove
+-- @return table A new table with the specified item removed
 local function remove_item(tbl, item)
     local new_tbl = {}
     if type(tbl) == "table" then
@@ -72,83 +84,113 @@ local function check_warehouse_power()
   end
 end
 
---- Check fridges and extend spoil time for items inside
+--- Process refrigerators to extend item spoilage time
+-- Checks each refrigerator (both basic and logistic variants) and extends
+-- the spoilage time for items inside based on the provided recovery rate.
+-- Removes invalid refrigerators from storage.
+--
 -- @function check_fridges
+-- @param recover_number Amount to extend spoilage time by
 local function check_fridges(recover_number)
-    -- Process each fridge
-    for unit_number, chest in pairs(storage.Fridges) do
-        if chest and chest.valid then
-            local inv = chest.get_inventory(defines.inventory.chest)
-            -- Check each slot in the fridge
-            for i=1, #inv do
+    -- Process each refrigerator in storage
+    for unit_number, fridge in pairs(storage.Fridges) do
+        -- Verify refrigerator is still valid
+        if fridge and fridge.valid then
+            -- Get refrigerator inventory
+            local inv = fridge.get_inventory(defines.inventory.chest)
+            
+            -- Process each item in the inventory
+            for i = 1, #inv do
                 local itemStack = inv[i]
+                -- Check if item exists and can spoil
                 if itemStack and itemStack.valid_for_read and itemStack.spoil_tick > 0 then
-                    itemStack.spoil_tick = math.min(itemStack.spoil_tick + recover_number, game.tick + itemStack.prototype.get_spoil_ticks(itemStack.quality) - 3)
+                    -- Extend spoilage time while respecting maximum duration
+                    local max_spoil_time = game.tick + itemStack.prototype.get_spoil_ticks(itemStack.quality) - 3
+                    itemStack.spoil_tick = math.min(
+                        itemStack.spoil_tick + recover_number,
+                        max_spoil_time
+                    )
                 end
             end
         else
+            -- Remove invalid refrigerator from storage
             storage.Fridges = remove_item(storage.Fridges, unit_number)
-            -- game.print("fridge is removed unexpectedly, removing it from watch list, id: "..unit_number)
         end
     end
 end
 
 
-local frozen_slots = {} -- Track which slots are frozen per hub
 
-local function check_platform_warehouse()
-  if not script.active_mods["space-age"] then return end
-  
-  -- Reset frozen slots tracking
-  frozen_slots = {}
-  
-  -- Process each surface that has platform warehouses
-  for surface_name, warehouses in pairs(storage.PlatformWarehouses) do
-    local surface = game.surfaces[surface_name]
-    if surface then
-      -- Calculate total bonus slots for this surface
-      local bonus_slots = #warehouses * settings.startup["fridge-space-plantform-capacity"].value
-      
-      -- Find platform hub and process items
-      local platform_hubs = surface.find_entities_filtered{
-        name = "space-platform-hub"
-      }
-      
-      for _, hub in pairs(platform_hubs) do
-        local platform_inv = hub.get_inventory(defines.inventory.hub_main)
-        if platform_inv then
-          local items_frozen = 0
-          local hub_key = string.format("%d_%d", hub.position.x, hub.position.y)
-          frozen_slots[hub_key] = {}
-          
-          -- Process items up to bonus slot limit
-          for i = 1, #platform_inv do
-            if items_frozen >= bonus_slots then break end
-            
-            local itemStack = platform_inv[i]
-            if itemStack and itemStack.valid_for_read and itemStack.spoil_tick > 0 then
-              -- Mark slot as frozen
-              frozen_slots[hub_key][i] = true
-              
-              itemStack.spoil_tick = math.min(
-                itemStack.spoil_tick + 80,
-                game.tick + itemStack.prototype.get_spoil_ticks(itemStack.quality) - 3
-              )
-              items_frozen = items_frozen + 1
-            end
-          end
-        end
-      end
-    end
-  end
-end
-
-
---- Process platform warehouses to extend spoil time of items
+--- Process space platform warehouses to extend item spoilage time
+-- Only runs if Space Age mod is active. Finds all platform hubs and extends
+-- spoilage time for items up to the configured bonus slot capacity.
+-- Tracks which slots are being preserved for visual feedback.
+--
 -- @function check_platform_warehouse
--- @description Checks space platform warehouses and extends spoil time for items based on bonus slots.
--- Only runs if space-age mod is active. Tracks frozen slots per hub and applies preservation effect
--- up to the configured capacity limit.
+local function check_platform_warehouse()
+    -- Skip if Space Age mod is not active
+    if not script.active_mods["space-age"] then return end
+    
+    -- Reset frozen slot tracking for this update
+    frozen_slots = {}
+    
+    -- Process each surface with platform warehouses
+    for surface_name, warehouses in pairs(storage.PlatformWarehouses) do
+        local surface = game.surfaces[surface_name]
+        if not surface then goto continue end
+        
+        -- Calculate preservation capacity for this surface
+        local bonus_slots = #warehouses * settings.startup["fridge-space-plantform-capacity"].value
+        
+        -- Find and process all platform hubs
+        local platform_hubs = surface.find_entities_filtered{
+            name = "space-platform-hub"
+        }
+        
+        -- Process each hub's inventory
+        for _, hub in pairs(platform_hubs) do
+            local platform_inv = hub.get_inventory(defines.inventory.hub_main)
+            if not platform_inv then goto next_hub end
+            
+            -- Track preserved slots for this hub
+            local hub_key = string.format("%d_%d", hub.position.x, hub.position.y)
+            frozen_slots[hub_key] = {}
+            local items_frozen = 0
+            
+            -- Process inventory slots up to capacity
+            for i = 1, #platform_inv do
+                -- Stop if we've reached preservation limit
+                if items_frozen >= bonus_slots then break end
+                
+                local itemStack = platform_inv[i]
+                if itemStack and itemStack.valid_for_read and itemStack.spoil_tick > 0 then
+                    -- Mark slot as preserved and extend spoilage time
+                    frozen_slots[hub_key][i] = true
+                    
+                    local max_spoil_time = game.tick + itemStack.prototype.get_spoil_ticks(itemStack.quality) - 3
+                    itemStack.spoil_tick = math.min(
+                        itemStack.spoil_tick + 80,
+                        max_spoil_time
+                    )
+                    items_frozen = items_frozen + 1
+                end
+            end
+            
+            ::next_hub::
+        end
+        
+        ::continue::
+    end
+end
+
+
+--- Process preservation wagons to extend item spoilage time
+-- Checks each preservation wagon's cargo inventory and extends the spoilage time
+-- for items inside based on the provided recovery rate. This allows items to be
+-- preserved while being transported by rail.
+--
+-- @function check_wagons
+-- @param recover_number Amount to extend spoilage time by
 local function check_wagons(recover_number)
   -- Process each wagon's inventory
   for _, wagon in pairs(storage.Wagons) do
@@ -218,240 +260,286 @@ end
 
 ---- Runtime Events ----
 
---- Handler for when an entity is created
+--- Handle creation of preservation entities
+-- Registers newly created entities in the appropriate storage tables
+-- and performs any necessary setup (like creating power proxies for warehouses).
+--
 -- @function OnEntityCreated
 -- @param event Event data containing the created entity
 -- @field event.created_entity Entity created by player
 -- @field event.entity Entity created by script
 local function OnEntityCreated(event)
-  local entity = event.created_entity or event.entity
-  if entity and entity.valid then
+    -- Get entity from either player or script creation
+    local entity = event.created_entity or event.entity
+    if not (entity and entity.valid) then return end
+    
+    -- Handle entity based on type
     if entity.name == "preservation-warehouse" then
-      local proxy = entity.surface.create_entity{
-        name = "warehouse-power-proxy",
-        position = entity.position,
-        force = entity.force
-      }
-      if proxy then
-        storage.Warehouses[entity.unit_number] = {warehouse = entity, proxy = proxy}
-      end
+        -- Create power proxy for warehouse
+        local proxy = entity.surface.create_entity{
+            name = "warehouse-power-proxy",
+            position = entity.position,
+            force = entity.force
+        }
+        
+        -- Register warehouse with its power proxy
+        if proxy then
+            storage.Warehouses[entity.unit_number] = {
+                warehouse = entity,
+                proxy = proxy
+            }
+        end
+        
     elseif entity.name == "preservation-platform-warehouse" then
-      -- Store platform warehouses by surface name
-      local surface_name = entity.surface.name
-      storage.PlatformWarehouses[surface_name] = storage.PlatformWarehouses[surface_name] or {}
-      table.insert(storage.PlatformWarehouses[surface_name], entity)
+        -- Initialize surface storage if needed
+        local surface_name = entity.surface.name
+        storage.PlatformWarehouses[surface_name] = storage.PlatformWarehouses[surface_name] or {}
+        
+        -- Add warehouse to surface storage
+        table.insert(storage.PlatformWarehouses[surface_name], entity)
+        
     elseif entity.name:find("refrigerater") then
-      storage.Fridges[entity.unit_number] = entity
+        -- Register basic or logistic refrigerator
+        storage.Fridges[entity.unit_number] = entity
+        
     elseif entity.name == "preservation-wagon" then
-      storage.Wagons[entity.unit_number] = entity
-    elseif entity.name:find("inserter") then
-      storage.PreservationInserters[entity.unit_number] = entity
+        -- Register preservation wagon
+        storage.Wagons[entity.unit_number] = entity
+        
+    elseif entity.name:find("preservation%-inserter") then
+        -- Register preservation inserter
+        storage.PreservationInserters[entity.unit_number] = entity
     end
-  end
 end
 
---- Handler for when an entity is removed
+--- Handle removal of preservation entities
+-- Cleans up entity references from storage tables and performs any necessary
+-- cleanup operations (like destroying power proxies for warehouses).
+--
 -- @function OnEntityRemoved
 -- @param event Event data containing the removed entity
--- @field event.entity Entity that was removed
+-- @field event.entity Entity being removed
 local function OnEntityRemoved(event)
-  local entity = event.entity
-  if entity and entity.valid then
+    -- Verify entity is valid
+    local entity = event.entity
+    if not (entity and entity.valid) then return end
+    
+    -- Handle entity based on type
     if entity.name == "preservation-warehouse" then
-      local filtered_warehouses = {}
-      for unit_number, warehouse_dict in pairs(storage.Warehouses) do
-        local warehouse = warehouse_dict.warehouse
-        local proxy = warehouse_dict.proxy
-        if warehouse == entity then
-          proxy.destroy()
-        else
-          filtered_warehouses[unit_number] = warehouse_dict
+        -- Clean up warehouse and its power proxy
+        local filtered_warehouses = {}
+        for unit_number, warehouse_dict in pairs(storage.Warehouses) do
+            local warehouse = warehouse_dict.warehouse
+            local proxy = warehouse_dict.proxy
+            
+            if warehouse == entity then
+                -- Destroy associated power proxy
+                if proxy and proxy.valid then
+                    proxy.destroy()
+                end
+            else
+                -- Keep other warehouses
+                filtered_warehouses[unit_number] = warehouse_dict
+            end
         end
-      end
-      storage.Warehouses = filtered_warehouses
+        storage.Warehouses = filtered_warehouses
+        
     elseif entity.name == "preservation-platform-warehouse" then
-      -- Remove from surface storage
-      local surface_name = entity.surface.name
-      if storage.PlatformWarehouses[surface_name] then
-        for i, warehouse in ipairs(storage.PlatformWarehouses[surface_name]) do
-          if warehouse == entity then
-            table.remove(storage.PlatformWarehouses[surface_name], i)
-            break
-          end
+        -- Remove from surface-specific storage
+        local surface_name = entity.surface.name
+        if storage.PlatformWarehouses[surface_name] then
+            for i, warehouse in ipairs(storage.PlatformWarehouses[surface_name]) do
+                if warehouse == entity then
+                    table.remove(storage.PlatformWarehouses[surface_name], i)
+                    break
+                end
+            end
         end
-      end
+        
     elseif entity.name:find("%refrigerater%") then
-      storage.Fridges = remove_item(storage.Fridges, entity.unit_number)
+        -- Remove refrigerator from storage
+        storage.Fridges = remove_item(storage.Fridges, entity.unit_number)
+        
     elseif entity.name == "preservation-wagon" then
-      storage.Wagons = remove_item(storage.Wagons, entity.unit_number)
+        -- Remove wagon from storage
+        storage.Wagons = remove_item(storage.Wagons, entity.unit_number)
+        
     elseif entity.name:find("preservation%-inserter") then
-      storage.PreservationInserters = remove_item(storage.PreservationInserters, entity.unit_number)
+        -- Remove inserter from storage
+        storage.PreservationInserters = remove_item(storage.PreservationInserters, entity.unit_number)
     end
-  end
 end
 
----- Initialization ----
-do
-  --- Find and register all existing fridges on all surfaces
-  -- @function init_chests
-  -- Scans all game surfaces for fridges and adds them to storage
-  local function init_chests()
-    -- Clear existing storage
+---- Initialization Functions ----
+
+--- Initialize or update mod settings
+-- Updates global variables with current mod settings
+--
+-- @function init_settings
+local function init_settings()
+    freeze_rates = settings.global["fridge-freeze-rate"].value
+end
+
+--- Find and register all preservation entities across all surfaces
+-- Scans all game surfaces for preservation entities (refrigerators, warehouses,
+-- wagons, etc.) and registers them in the appropriate storage tables. Also
+-- handles cleanup of old power proxies and initialization of new ones.
+--
+-- @function init_entities
+local function init_entities()
+    -- Reset all storage tables
     storage.Fridges = {}
     storage.Warehouses = {}
     storage.PlatformWarehouses = {}
     storage.Wagons = {}
     storage.PreservationInserters = {}
 
-    -- Clean up old warehouse proxies
+    -- Process each game surface
     for _, surface in pairs(game.surfaces) do
-      local old_proxies = surface.find_entities_filtered{ name = "warehouse-power-proxy" }
-      for _, proxy in pairs(old_proxies) do
-        proxy.destroy()
-      end
-    end
-
-    -- Initialize fridges and warehouses
-    for _, surface in pairs(game.surfaces) do
-      -- Find and register fridges
-      local chests = surface.find_entities_filtered{ name = {
-        "refrigerater", 
-        "logistic-refrigerater-passive-provider", 
-        "logistic-refrigerater-requester",
-        "logistic-refrigerater-buffer"
-      } }
-      for _, chest in pairs(chests) do
-        storage.Fridges[chest.unit_number] = chest
-      end
-
-      -- Find and register preservation inserters
-      local inserters = surface.find_entities_filtered{ 
-        name = {
-          "preservation-inserter",
-          "preservation-long-inserter", 
-          "preservation-stack-inserter",
-          "preservation-bulk-inserter"
+        -- Clean up old power proxies first
+        local old_proxies = surface.find_entities_filtered{
+            name = "warehouse-power-proxy"
         }
-      }
-      for _, inserter in pairs(inserters) do
-        storage.PreservationInserters[inserter.unit_number] = inserter
-      end
-
-      -- Find and register warehouses
-      local warehouses = surface.find_entities_filtered{ name = "preservation-warehouse" }
-      for _, warehouse in pairs(warehouses) do
-        local proxy = warehouse.surface.create_entity{
-          name = "warehouse-power-proxy",
-          position = warehouse.position,
-          force = warehouse.force
-        }
-        if proxy then
-          storage.Warehouses[warehouse.unit_number] = {warehouse = warehouse, proxy = proxy}
+        for _, proxy in pairs(old_proxies) do
+            proxy.destroy()
         end
-      end
-
-      -- Find all platform warehouses
-      local platform_warehouses = surface.find_entities_filtered{
-        name = "preservation-platform-warehouse"
-      }
-      if #platform_warehouses > 0 then
-        storage.PlatformWarehouses[surface.name] = platform_warehouses
-      end
-
-      -- Find all perservation wagons
-      local wagons = surface.find_entities_filtered{ name = "preservation-wagon" }
-      for _, wagon in pairs(wagons) do
-        storage.Wagons[wagon.unit_number] = wagon
-      end
+        
+        -- Find and register basic and logistic refrigerators
+        local refrigerators = surface.find_entities_filtered{
+            name = {
+                "refrigerater",
+                "logistic-refrigerater-passive-provider",
+                "logistic-refrigerater-requester",
+                "logistic-refrigerater-buffer"
+            }
+        }
+        for _, fridge in pairs(refrigerators) do
+            storage.Fridges[fridge.unit_number] = fridge
+        end
+        
+        -- Find and register preservation inserters
+        local inserters = surface.find_entities_filtered{
+            name = {
+                "preservation-inserter",
+                "preservation-long-inserter",
+                "preservation-stack-inserter",
+                "preservation-bulk-inserter"
+            }
+        }
+        for _, inserter in pairs(inserters) do
+            storage.PreservationInserters[inserter.unit_number] = inserter
+        end
+        
+        -- Find and register warehouses with power proxies
+        local warehouses = surface.find_entities_filtered{
+            name = "preservation-warehouse"
+        }
+        for _, warehouse in pairs(warehouses) do
+            -- Create new power proxy for warehouse
+            local proxy = surface.create_entity{
+                name = "warehouse-power-proxy",
+                position = warehouse.position,
+                force = warehouse.force
+            }
+            
+            -- Register warehouse with its proxy
+            if proxy then
+                storage.Warehouses[warehouse.unit_number] = {
+                    warehouse = warehouse,
+                    proxy = proxy
+                }
+            end
+        end
+        
+        -- Find and register platform warehouses
+        local platform_warehouses = surface.find_entities_filtered{
+            name = "preservation-platform-warehouse"
+        }
+        if #platform_warehouses > 0 then
+            storage.PlatformWarehouses[surface.name] = platform_warehouses
+        end
+        
+        -- Find and register preservation wagons
+        local wagons = surface.find_entities_filtered{
+            name = "preservation-wagon"
+        }
+        for _, wagon in pairs(wagons) do
+            storage.Wagons[wagon.unit_number] = wagon
+        end
     end
-  end
-
-
-  local function init_settings()
-    freeze_rates = settings.global["fridge-freeze-rate"].value
-  end
-
-
-  --- Register all event handlers
-  -- @function init_events
-  -- Sets up all event handlers for fridge creation, removal and updates
-  local function init_events()
-    local filter = {
-      { filter="name", name="refrigerater" },
-      { filter="name", name="logistic-refrigerater-passive-provider"},
-      { filter="name", name="logistic-refrigerater-requester"},
-      { filter="name", name="logistic-refrigerater-buffer"},
-      { filter="name", name="preservation-warehouse"},
-      { filter="name", name="preservation-platform-warehouse" },
-      { filter="name", name="preservation-wagon" },
-      { filter="name", name="preservation-inserter" },
-      { filter="name", name="preservation-long-inserter" },
-      { filter="name", name="preservation-stack-inserter" },
-      { filter="name", name="preservation-bulk-inserter" },
-      
-    }
-    script.on_event(defines.events.on_built_entity, OnEntityCreated, filter)
-    script.on_event(defines.events.on_entity_cloned, OnEntityCreated, filter)
-    script.on_event(defines.events.on_robot_built_entity, OnEntityCreated, filter)
-    script.on_event(defines.events.on_space_platform_built_entity, OnEntityCreated, filter)
-    script.on_event(defines.events.script_raised_built, OnEntityCreated, filter)
-    script.on_event(defines.events.script_raised_revive, OnEntityCreated, filter)
-    script.on_event(defines.events.on_tick, on_tick)
-    script.on_event(defines.events.on_player_mined_entity, OnEntityRemoved, filter)
-    script.on_event(defines.events.on_robot_mined_entity, OnEntityRemoved, filter)
-    script.on_event(defines.events.on_space_platform_mined_entity, OnEntityRemoved, filter)
-    script.on_event(defines.events.on_entity_died, OnEntityRemoved, filter)
-    script.on_event(defines.events.script_raised_destroy, OnEntityRemoved, filter)
-
-    script.on_event(defines.events.on_runtime_mod_setting_changed, init_settings)
-  end
-
-  -- Register load handler
-  script.on_load(function()
-    init_events()
-  end)
-
-  -- Register init handler
-  script.on_init(function()
-    init_storages()
-    init_chests()
-    init_events()
-  end)
-
-  -- Register configuration changed handler
-  script.on_configuration_changed(function(data)
-    init_settings()
-    init_chests()
-    init_events()
-  end)
-
-  -- -- Add GUI event handlers
-  -- script.on_event(defines.events.on_gui_opened, function(event)
-  --   local player = game.players[event.player_index]
-  --   local entity = event.entity
-    
-  --   if entity and entity.name == "space-platform-hub" then
-  --     -- Wait one tick for GUI to be created
-  --     script.on_nth_tick(1, function()
-  --       local hub_key = string.format("%d_%d", entity.position.x, entity.position.y)
-  --       local frozen = frozen_slots[hub_key] or {}
-        
-  --       -- Find inventory slots in GUI
-  --       for _, element in pairs(player.gui.screen.children) do
-  --         if element.type == "frame" and element.get_inventory then
-  --           -- Found inventory frame
-  --           for i, slot in pairs(element.children) do
-  --             if frozen[i] then
-  --               -- Add blue background to frozen slots
-  --               slot.style.background_color = {r = 0.5, g = 0.8, b = 1, a = 0.3}
-  --             end
-  --           end
-  --         end
-  --       end
-        
-  --       script.on_nth_tick(1, nil) -- Remove the handler
-  --     end)
-  --   end
-  -- end)
-
 end
+
+
+---- Event Registration ----
+
+--- Register all event handlers for preservation entities
+-- Sets up event handlers for entity creation, removal, and periodic updates.
+-- Also handles mod settings changes.
+--
+-- @function init_events
+local function init_events()
+    -- Define entity filter for all preservation-related entities
+    local entity_filter = {
+        { filter = "name", name = "refrigerater" },
+        { filter = "name", name = "logistic-refrigerater-passive-provider" },
+        { filter = "name", name = "logistic-refrigerater-requester" },
+        { filter = "name", name = "logistic-refrigerater-buffer" },
+        { filter = "name", name = "preservation-warehouse" },
+        { filter = "name", name = "preservation-platform-warehouse" },
+        { filter = "name", name = "preservation-wagon" },
+        { filter = "name", name = "preservation-inserter" },
+        { filter = "name", name = "preservation-long-inserter" },
+        { filter = "name", name = "preservation-stack-inserter" },
+        { filter = "name", name = "preservation-bulk-inserter" }
+    }
+    
+    -- Register entity creation events
+    local creation_events = {
+        defines.events.on_built_entity,              -- Player built
+        defines.events.on_entity_cloned,             -- Entity copied
+        defines.events.on_robot_built_entity,        -- Robot built
+        defines.events.on_space_platform_built_entity, -- Space platform
+        defines.events.script_raised_built,          -- Script created
+        defines.events.script_raised_revive          -- Entity revived
+    }
+    for _, event in pairs(creation_events) do
+        script.on_event(event, OnEntityCreated, entity_filter)
+    end
+    
+    -- Register entity removal events
+    local removal_events = {
+        defines.events.on_player_mined_entity,         -- Player removed
+        defines.events.on_robot_mined_entity,          -- Robot removed
+        defines.events.on_space_platform_mined_entity, -- Space platform
+        defines.events.on_entity_died,                 -- Entity destroyed
+        defines.events.script_raised_destroy           -- Script removed
+    }
+    for _, event in pairs(removal_events) do
+        script.on_event(event, OnEntityRemoved, entity_filter)
+    end
+    
+    -- Register update events
+    script.on_event(defines.events.on_tick, on_tick)
+    script.on_event(defines.events.on_runtime_mod_setting_changed, init_settings)
+end
+
+---- Script Lifecycle Handlers ----
+
+-- Handle mod loading (called when save is loaded)
+script.on_load(function()
+    init_events()
+end)
+
+-- Handle initial mod setup (called when mod is first added to save)
+script.on_init(function()
+    init_storages()
+    init_entities()
+    init_events()
+end)
+
+-- Handle mod configuration changes
+script.on_configuration_changed(function(data)
+    init_settings()
+    init_entities()
+    init_events()
+end)
