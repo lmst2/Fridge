@@ -369,40 +369,53 @@ if mods["space-age"] then
   local space_warehouse = table.deepcopy(data.raw["cargo-bay"]["cargo-bay"])
   space_warehouse.type = "cargo-bay"
   space_warehouse.name = "preservation-platform-warehouse"
-  space_warehouse.icons = {
-    {
-      icon = data.raw["cargo-bay"]["cargo-bay"].icon,
-      icon_size = data.raw["cargo-bay"]["cargo-bay"].icon_size,
-      tint = {r=0.6, g=0.8, b=1.0, a=0.8}
-    }
-  }
-  -- space_warehouse.icon_size = 256
-  -- space_warehouse.graphics_set.picture.tint = {r=0.6, g=0.8, b=1.0, a=0.8}
-  -- space_warehouse.graphics_set.picture.render_layer = data.raw["cargo-bay"]["cargo-bay"].graphics_set.picture.render_layer
+  -- Apply tint to entity sprite
+  for _, layer in pairs(space_warehouse.graphics_set.picture) do
+    for _,sprite in pairs(layer.layers) do
+      sprite.tint = {r=0.6, g=0.8, b=1.0, a=1}
+    end
+  end
+  for _, layers in pairs(space_warehouse.graphics_set.connections) do
+    for _, layer in pairs(layers) do
+      for _, sprite in pairs(layer) do
+        if sprite.layers then
+          for _,spr in pairs(sprite.layers) do
+            spr.tint = {r=0.6, g=0.8, b=1.0, a=1}
+          end
+        else
+          sprite.tint = {r=0.6, g=0.8, b=1.0, a=1}
+        end
+      end
+    end
+  end
+  for _, layer in pairs(space_warehouse.platform_graphics_set.picture) do
+    for _,sprite in pairs(layer.layers) do
+      sprite.tint = {r=0.6, g=0.8, b=1.0, a=1}
+    end
+  end
+  for _, layers in pairs(space_warehouse.platform_graphics_set.connections) do
+    for _, layer in pairs(layers) do
+      for _, sprite in pairs(layer) do
+        if sprite.layers then
+          for _,spr in pairs(sprite.layers) do
+            spr.tint = {r=0.6, g=0.8, b=1.0, a=1}
+          end
+        else
+          sprite.tint = {r=0.6, g=0.8, b=1.0, a=1}
+        end
+      end
+    end
+  end
+  for _, hatch_def in pairs(space_warehouse.hatch_definitions) do
+    for _, sprite in pairs(hatch_def.hatch_graphics.layers) do
+      sprite.tint = {r=0.6, g=0.8, b=1.0, a=1}
+    end
+  end
 
   space_warehouse.minable = {mining_time = 8, result = "preservation-platform-warehouse"}
   space_warehouse.inventory_size_bonus = bouns_capacity
-  -- space_warehouse.inventory_type = "with_filters_and_bar"
   space_warehouse.surface_conditions = {}
-  -- Add cargo bay specific properties
-  -- space_warehouse.graphics_set = {
-  --   animation = {
-  --     filename = "__Fridge__/graphics/large-chest-front.png",
-  --     priority = "extra-high",
-  --     width = 1024,
-  --     height = 1024,
-  --     scale = 0.25
-  --   }
-  -- }
-  -- space_warehouse.platform_graphics_set = {
-  --   animation = {
-  --     filename = "__Fridge__/graphics/large-chest-front.png",
-  --     priority = "extra-high",
-  --     width = 1024,
-  --     height = 1024,
-  --     scale = 0.25
-  --   }
-  -- }
+
   data:extend({
     space_warehouse,
     {
@@ -438,18 +451,6 @@ if mods["space-age"] then
   )
 end
 
--- -- Add after other graphics definitions
--- data:extend({
---   {
---     type = "sprite",
---     name = "frozen-overlay",
---     filename = "__Fridge__/graphics/frozen-overlay.png",
---     priority = "extra-high",
---     width = 32,
---     height = 32,
---     flags = {"icon"}
---   }
--- })
 -- Create preservation wagon based on cargo wagon
 local preservation_wagon = table.deepcopy(data.raw["cargo-wagon"]["cargo-wagon"])
 preservation_wagon.name = "preservation-wagon"
@@ -525,4 +526,224 @@ data:extend({
   }
 })
 
+-- Add after other graphics definitions
+-- Create base preservation inserter
+local preservation_inserter = table.deepcopy(data.raw["inserter"]["fast-inserter"])
+preservation_inserter.name = "preservation-inserter"
+preservation_inserter.minable.result = "preservation-inserter"
+preservation_inserter.energy_per_movement = "10kJ"
+preservation_inserter.energy_per_rotation = "10kJ"
+preservation_inserter.energy_source = {
+  type = "electric",
+  usage_priority = "secondary-input",
+  drain = "0.5kW"
+}
+-- Apply tint to entity sprite
+preservation_inserter.platform_picture.sheet.tint = {r=0.6, g=0.8, b=1.0, a=1.0}
+preservation_inserter.hand_base_picture.tint = {r=0.6, g=0.8, b=1.0, a=1.0}
+preservation_inserter.hand_open_picture.tint = {r=0.6, g=0.8, b=1.0, a=1.0}
+preservation_inserter.hand_closed_picture.tint = {r=0.6, g=0.8, b=1.0, a=1.0}
+
+preservation_inserter.next_upgrade = "preservation-stack-inserter"
+
+-- Create long preservation inserter
+local preservation_long_inserter = table.deepcopy(data.raw["inserter"]["long-handed-inserter"])
+preservation_long_inserter.name = "preservation-long-inserter"
+preservation_long_inserter.minable.result = "preservation-long-inserter"
+preservation_long_inserter.energy_per_movement = "15kJ"
+preservation_long_inserter.energy_per_rotation = "15kJ"
+preservation_long_inserter.energy_source = {
+  type = "electric",
+  usage_priority = "secondary-input",
+  drain = "0.7kW"
+}
+-- Apply tint to entity sprite
+preservation_long_inserter.platform_picture.sheet.tint = {r=0.6, g=0.8, b=1.0, a=1.0}
+preservation_long_inserter.hand_base_picture.tint = {r=0.6, g=0.8, b=1.0, a=1.0}
+preservation_long_inserter.hand_open_picture.tint = {r=0.6, g=0.8, b=1.0, a=1.0}
+preservation_long_inserter.hand_closed_picture.tint = {r=0.6, g=0.8, b=1.0, a=1.0}
+
+-- Create stack preservation inserter
+local preservation_stack_inserter = table.deepcopy(data.raw["inserter"]["bulk-inserter"])
+preservation_stack_inserter.name = "preservation-stack-inserter"
+preservation_stack_inserter.minable.result = "preservation-stack-inserter"
+preservation_stack_inserter.energy_per_movement = "25kJ"
+preservation_stack_inserter.energy_per_rotation = "25kJ"
+preservation_stack_inserter.energy_source = {
+  type = "electric",
+  usage_priority = "secondary-input",
+  drain = "1kW"
+}
+-- Apply tint to entity sprite
+preservation_stack_inserter.platform_picture.sheet.tint = {r=0.6, g=0.8, b=1.0, a=1.0}
+preservation_stack_inserter.hand_base_picture.tint = {r=0.6, g=0.8, b=1.0, a=1.0}
+preservation_stack_inserter.hand_open_picture.tint = {r=0.6, g=0.8, b=1.0, a=1.0}
+preservation_stack_inserter.hand_closed_picture.tint = {r=0.6, g=0.8, b=1.0, a=1.0}
+
+preservation_stack_inserter.next_upgrade = "preservation-bulk-inserter"
+
+-- Create bulk preservation inserter
+local preservation_bulk_inserter = table.deepcopy(data.raw["inserter"]["stack-inserter"])
+preservation_bulk_inserter.name = "preservation-bulk-inserter"
+preservation_bulk_inserter.minable.result = "preservation-bulk-inserter"
+preservation_bulk_inserter.energy_per_movement = "40kJ"
+preservation_bulk_inserter.energy_per_rotation = "40kJ"
+preservation_bulk_inserter.energy_source = {
+  type = "electric",
+  usage_priority = "secondary-input",
+  drain = "2kW"
+}
+-- Apply tint to entity sprite
+preservation_bulk_inserter.platform_picture.sheet.tint = {r=0.6, g=0.8, b=1.0, a=1.0}
+preservation_bulk_inserter.hand_base_picture.tint = {r=0.6, g=0.8, b=1.0, a=1.0}
+preservation_bulk_inserter.hand_open_picture.tint = {r=0.6, g=0.8, b=1.0, a=1.0}
+preservation_bulk_inserter.hand_closed_picture.tint = {r=0.6, g=0.8, b=1.0, a=1.0}
+
+-- Add items and recipes for all inserters
+data:extend({
+  preservation_inserter,
+  preservation_long_inserter,
+  preservation_stack_inserter,
+  preservation_bulk_inserter,
+  -- Items
+  {
+    type = "item",
+    name = "preservation-inserter",
+    icons = {
+      {
+        icon = data.raw["inserter"]["fast-inserter"].icon,
+        icon_size = data.raw["inserter"]["fast-inserter"].icon_size,
+        tint = {r=0.6, g=0.8, b=1.0, a=0.8}
+      }
+    },
+    subgroup = "inserter",
+    order = "d[preservation]-a[preservation-inserter]",
+    place_result = "preservation-inserter",
+    stack_size = 50
+  },
+  {
+    type = "item", 
+    name = "preservation-long-inserter",
+    icons = {
+      {
+        icon = data.raw["inserter"]["long-handed-inserter"].icon,
+        icon_size = data.raw["inserter"]["long-handed-inserter"].icon_size,
+        tint = {r=0.6, g=0.8, b=1.0, a=0.8}
+      }
+    },
+    subgroup = "inserter",
+    order = "d[preservation]-b[preservation-long-inserter]",
+    place_result = "preservation-long-inserter",
+    stack_size = 50
+  },
+  {
+    type = "item",
+    name = "preservation-stack-inserter",
+    icons = {
+      {
+        icon = data.raw["inserter"]["bulk-inserter"].icon,
+        icon_size = data.raw["inserter"]["bulk-inserter"].icon_size,
+        tint = {r=0.6, g=0.8, b=1.0, a=0.8}
+      }
+    },
+    subgroup = "inserter",
+    order = "d[preservation]-c[preservation-stack-inserter]",
+    place_result = "preservation-stack-inserter", 
+    stack_size = 50
+  },
+  {
+    type = "item",
+    name = "preservation-bulk-inserter",
+    icons = {
+      {
+        icon = data.raw["inserter"]["stack-inserter"].icon,
+        icon_size = data.raw["inserter"]["stack-inserter"].icon_size,
+        tint = {r=0.6, g=0.8, b=1.0, a=0.8}
+      }
+    },
+    subgroup = "inserter",
+    order = "d[preservation]-d[preservation-bulk-inserter]",
+    place_result = "preservation-bulk-inserter",
+    stack_size = 50
+  },
+  -- Recipes
+  {
+    type = "recipe",
+    name = "preservation-inserter",
+    enabled = false,
+    ingredients = {
+      {type = "item", name = "fast-inserter", amount = 1},
+      {type = "item", name = "electronic-circuit", amount = 2},
+      {type = "item", name = "refrigerater", amount = 1}
+    },
+    results = {{type = "item", name = "preservation-inserter", amount = 1}}
+  },
+  {
+    type = "recipe",
+    name = "preservation-long-inserter", 
+    enabled = false,
+    ingredients = {
+      {type = "item", name = "long-handed-inserter", amount = 1},
+      {type = "item", name = "electronic-circuit", amount = 3},
+      {type = "item", name = "refrigerater", amount = 1}
+    },
+    results = {{type = "item", name = "preservation-long-inserter", amount = 1}}
+  },
+  {
+    type = "recipe",
+    name = "preservation-stack-inserter",
+    enabled = false,
+    ingredients = {
+      {type = "item", name = "stack-inserter", amount = 1},
+      {type = "item", name = "advanced-circuit", amount = 2},
+      {type = "item", name = "refrigerater", amount = 1}
+    },
+    results = {{type = "item", name = "preservation-stack-inserter", amount = 1}}
+  },
+  {
+    type = "recipe",
+    name = "preservation-bulk-inserter",
+    enabled = false,
+    ingredients = {
+      {type = "item", name = "stack-inserter", amount = 1},
+      {type = "item", name = "advanced-circuit", amount = 4},
+      {type = "item", name = "processing-unit", amount = 1},
+      {type = "item", name = "refrigerater", amount = 1}
+    },
+    results = {{type = "item", name = "preservation-bulk-inserter", amount = 1}}
+  }
+})
+
+-- Add technology
+data:extend({
+  {
+    type = "technology",
+    name = "preservation-inserter",
+    icon_size = 256, icon_mipmaps = 4,
+    icons = {
+      {
+        icon = data.raw["inserter"]["stack-inserter"].icon,
+        icon_size = data.raw["inserter"]["stack-inserter"].icon_size,
+        icon_mipmaps = data.raw["inserter"]["stack-inserter"].icon_mipmaps,
+        tint = {r=0.6, g=0.8, b=1.0, a=0.8}
+      }
+    },
+    prerequisites = {"logistics", "refrigerater"},
+    unit = {
+      count = 50,
+      ingredients = {
+        {"automation-science-pack", 1},
+        {"logistic-science-pack", 1}
+      },
+      time = 30
+    },
+    effects = {
+      {type = "unlock-recipe", recipe = "preservation-inserter"},
+      {type = "unlock-recipe", recipe = "preservation-long-inserter"},
+      {type = "unlock-recipe", recipe = "preservation-stack-inserter"},
+      {type = "unlock-recipe", recipe = "preservation-bulk-inserter"}
+    },
+    order = "a-d-a"
+  }
+})
 

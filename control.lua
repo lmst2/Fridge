@@ -41,6 +41,7 @@ local function init_storages()
   storage.Warehouses = storage.Warehouses or {}
   storage.PlatformWarehouses = storage.PlatformWarehouses or {}
   storage.Wagons = storage.Wagons or {}
+  storage.PreservationInserters = storage.PreservationInserters or {}
 end
 
 --- Check warehouse power and extend spoil time if necessary
@@ -168,6 +169,25 @@ local function check_wagons(recover_number)
 end
 
 
+--- Check preservation inserters and extend spoil time for held items
+-- @function check_preservation_inserters
+local function check_preservation_inserters(recover_number)
+  for unit_number, inserter in pairs(storage.PreservationInserters) do
+    if inserter and inserter.valid then
+      local held_stack = inserter.held_stack
+      if held_stack and held_stack.valid_for_read and held_stack.spoil_tick > 0 then
+        held_stack.spoil_tick = math.min(
+          held_stack.spoil_tick + recover_number,
+          game.tick + held_stack.prototype.get_spoil_ticks(held_stack.quality) - 3
+        )
+      end
+    else
+      storage.PreservationInserters = remove_item(storage.PreservationInserters, unit_number)
+    end
+  end
+end
+
+
 --- Main tick handler that extends spoil time for items in fridges
 -- @function on_tick
 -- @param event Event data from Factorio runtime
@@ -182,10 +202,12 @@ local function on_tick(event)
     if game.tick%(10 * freeze_rates) == 0 then
       check_fridges((freeze_rates - 1) * 10)
       check_wagons((freeze_rates - 1) * 10)
+      check_preservation_inserters((freeze_rates - 1) * 10)
     end
 	elseif game.tick%freeze_rates == 0 then
     check_fridges(freeze_rates - 1)
     check_wagons(freeze_rates - 1)
+    check_preservation_inserters(freeze_rates - 1)
   end
 
   if game.tick%80 == 0 then
@@ -218,10 +240,12 @@ local function OnEntityCreated(event)
       local surface_name = entity.surface.name
       storage.PlatformWarehouses[surface_name] = storage.PlatformWarehouses[surface_name] or {}
       table.insert(storage.PlatformWarehouses[surface_name], entity)
-    elseif entity.name == "refrigerater" then
+    elseif entity.name:find("refrigerater") then
       storage.Fridges[entity.unit_number] = entity
     elseif entity.name == "preservation-wagon" then
       storage.Wagons[entity.unit_number] = entity
+    elseif entity.name:find("inserter") then
+      storage.PreservationInserters[entity.unit_number] = entity
     end
   end
 end
@@ -256,10 +280,12 @@ local function OnEntityRemoved(event)
           end
         end
       end
-    elseif entity.name == "refrigerater" then
+    elseif entity.name:find("%refrigerater%") then
       storage.Fridges = remove_item(storage.Fridges, entity.unit_number)
     elseif entity.name == "preservation-wagon" then
       storage.Wagons = remove_item(storage.Wagons, entity.unit_number)
+    elseif entity.name:find("preservation%-inserter") then
+      storage.PreservationInserters = remove_item(storage.PreservationInserters, entity.unit_number)
     end
   end
 end
@@ -275,6 +301,7 @@ do
     storage.Warehouses = {}
     storage.PlatformWarehouses = {}
     storage.Wagons = {}
+    storage.PreservationInserters = {}
 
     -- Clean up old warehouse proxies
     for _, surface in pairs(game.surfaces) do
@@ -295,6 +322,19 @@ do
       } }
       for _, chest in pairs(chests) do
         storage.Fridges[chest.unit_number] = chest
+      end
+
+      -- Find and register preservation inserters
+      local inserters = surface.find_entities_filtered{ 
+        name = {
+          "preservation-inserter",
+          "preservation-long-inserter", 
+          "preservation-stack-inserter",
+          "preservation-bulk-inserter"
+        }
+      }
+      for _, inserter in pairs(inserters) do
+        storage.PreservationInserters[inserter.unit_number] = inserter
       end
 
       -- Find and register warehouses
@@ -344,6 +384,10 @@ do
       { filter="name", name="preservation-warehouse"},
       { filter="name", name="preservation-platform-warehouse" },
       { filter="name", name="preservation-wagon" },
+      { filter="name", name="preservation-inserter" },
+      { filter="name", name="preservation-long-inserter" },
+      { filter="name", name="preservation-stack-inserter" },
+      { filter="name", name="preservation-bulk-inserter" },
       
     }
     script.on_event(defines.events.on_built_entity, OnEntityCreated, filter)
