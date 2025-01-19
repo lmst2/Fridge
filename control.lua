@@ -3,9 +3,9 @@
 -- that extend item spoilage time through various cooling mechanisms.
 --
 -- @module control
--- @author Original mod author
+-- @author LightningMaster
 -- @license MIT
--- @copyright 2023
+-- @copyright 2025
 
 ---- Configuration ----
 
