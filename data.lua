@@ -321,27 +321,33 @@ apply_preservation_tint(preservation_stack_inserter.platform_picture.sheet)
 apply_preservation_tint(preservation_stack_inserter.hand_base_picture)
 apply_preservation_tint(preservation_stack_inserter.hand_open_picture)
 apply_preservation_tint(preservation_stack_inserter.hand_closed_picture)
-preservation_stack_inserter.next_upgrade = "preservation-bulk-inserter"
+
+if mods["space-age"] then
+  preservation_stack_inserter.next_upgrade = "preservation-bulk-inserter"
+end
 
 -- Bulk preservation inserter (based on stack inserter)
-local preservation_bulk_inserter = table.deepcopy(data.raw["inserter"]["stack-inserter"])
-preservation_bulk_inserter.name = "preservation-bulk-inserter"
-preservation_bulk_inserter.minable.result = "preservation-bulk-inserter"
+local preservation_bulk_inserter = nil
+if mods["space-age"] then
+  preservation_bulk_inserter = table.deepcopy(data.raw["inserter"]["stack-inserter"])
+  preservation_bulk_inserter.name = "preservation-bulk-inserter"
+  preservation_bulk_inserter.minable.result = "preservation-bulk-inserter"
 
--- Configure energy usage
-preservation_bulk_inserter.energy_per_movement = "40kJ"
-preservation_bulk_inserter.energy_per_rotation = "40kJ"
-preservation_bulk_inserter.energy_source = {
-  type = "electric",
-  usage_priority = "secondary-input",
-  drain = "2kW"
-}
+  -- Configure energy usage
+  preservation_bulk_inserter.energy_per_movement = "40kJ"
+  preservation_bulk_inserter.energy_per_rotation = "40kJ"
+  preservation_bulk_inserter.energy_source = {
+    type = "electric",
+    usage_priority = "secondary-input",
+    drain = "2kW"
+  }
 
--- Apply preservation tint
-apply_preservation_tint(preservation_bulk_inserter.platform_picture.sheet)
-apply_preservation_tint(preservation_bulk_inserter.hand_base_picture)
-apply_preservation_tint(preservation_bulk_inserter.hand_open_picture)
-apply_preservation_tint(preservation_bulk_inserter.hand_closed_picture)
+  -- Apply preservation tint
+  apply_preservation_tint(preservation_bulk_inserter.platform_picture.sheet)
+  apply_preservation_tint(preservation_bulk_inserter.hand_base_picture)
+  apply_preservation_tint(preservation_bulk_inserter.hand_open_picture)
+  apply_preservation_tint(preservation_bulk_inserter.hand_closed_picture)
+end
 
 
 --[[ ============================================================================
@@ -432,21 +438,6 @@ local items = {
       place_result = "preservation-stack-inserter", 
       stack_size = 50
   },
-
-  -- Bulk preservation inserter
-  {
-      type = "item",
-      name = "preservation-bulk-inserter",
-      icons = {{
-          icon = data.raw["inserter"]["stack-inserter"].icon,
-          icon_size = data.raw["inserter"]["stack-inserter"].icon_size,
-          tint = {r=0.6, g=0.8, b=1.0, a=0.8}
-      }},
-      subgroup = "inserter",
-      order = "d[preservation]-d[preservation-bulk-inserter]",
-      place_result = "preservation-bulk-inserter",
-      stack_size = 50
-  }
 }
 
 -- Add logistic fridge items
@@ -484,6 +475,19 @@ if mods["space-age"] then
       order = "a[items]-e[preservation-platform-warehouse]",
       place_result = "preservation-platform-warehouse",
       stack_size = 10
+  })
+  table.insert(items, {
+      type = "item",
+      name = "preservation-bulk-inserter",
+      icons = {{
+          icon = data.raw["inserter"]["stack-inserter"].icon,
+          icon_size = data.raw["inserter"]["stack-inserter"].icon_size,
+          tint = {r=0.6, g=0.8, b=1.0, a=0.8}
+      }},
+      subgroup = "inserter",
+      order = "d[preservation]-d[preservation-bulk-inserter]",
+      place_result = "preservation-bulk-inserter",
+      stack_size = 50
   })
 end
 
@@ -569,26 +573,13 @@ local recipes = {
       name = "preservation-stack-inserter",
       enabled = false,
       ingredients = {
-          {type = "item", name = "stack-inserter", amount = 1},
+          {type = "item", name = "bulk-inserter", amount = 1},
           {type = "item", name = "advanced-circuit", amount = 2},
           {type = "item", name = "refrigerater", amount = 1}
       },
       results = {{type = "item", name = "preservation-stack-inserter", amount = 1}}
   },
 
-  -- Bulk preservation inserter
-  {
-      type = "recipe",
-      name = "preservation-bulk-inserter",
-      enabled = false,
-      ingredients = {
-          {type = "item", name = "stack-inserter", amount = 1},
-          {type = "item", name = "advanced-circuit", amount = 4},
-          {type = "item", name = "processing-unit", amount = 1},
-          {type = "item", name = "refrigerater", amount = 1}
-      },
-      results = {{type = "item", name = "preservation-bulk-inserter", amount = 1}}
-  }
 }
 
 -- Add logistic fridge recipes
@@ -617,6 +608,18 @@ if mods["space-age"] then
           {type = "item", name = "iron-plate", amount = 100}
       },
       results = {{type = "item", name = "preservation-platform-warehouse", amount = 1}}
+  })
+  table.insert(recipes, {
+      type = "recipe",
+      name = "preservation-bulk-inserter",
+      enabled = false,
+      ingredients = {
+          {type = "item", name = "stack-inserter", amount = 1},
+          {type = "item", name = "advanced-circuit", amount = 4},
+          {type = "item", name = "processing-unit", amount = 1},
+          {type = "item", name = "refrigerater", amount = 1}
+      },
+      results = {{type = "item", name = "preservation-bulk-inserter", amount = 1}}
   })
 end
 
@@ -706,7 +709,7 @@ local technologies = {
       name = "preservation-warehouse-tech",
       icon = "__Fridge__/graphics/icon/large-chest.png",
       icon_size = 256,
-      prerequisites = {"logistic-refrigerater", "cryogenic-science-pack"},
+      prerequisites = {"logistic-refrigerater"},
       unit = {
           count = 1500,
           ingredients = ingredPW,
@@ -749,9 +752,8 @@ local technologies = {
       icon_size = 256,
       icon_mipmaps = 4,
       icons = {{
-          icon = data.raw["inserter"]["stack-inserter"].icon,
-          icon_size = data.raw["inserter"]["stack-inserter"].icon_size,
-          icon_mipmaps = data.raw["inserter"]["stack-inserter"].icon_mipmaps,
+          icon = data.raw["inserter"]["inserter"].icon,
+          icon_size = data.raw["inserter"]["inserter"].icon_size,
           tint = {r=0.6, g=0.8, b=1.0, a=0.8}
       }},
       prerequisites = {"logistics", "refrigerater"},
@@ -766,8 +768,7 @@ local technologies = {
       effects = {
           {type = "unlock-recipe", recipe = "preservation-inserter"},
           {type = "unlock-recipe", recipe = "preservation-long-inserter"},
-          {type = "unlock-recipe", recipe = "preservation-stack-inserter"},
-          {type = "unlock-recipe", recipe = "preservation-bulk-inserter"}
+          {type = "unlock-recipe", recipe = "preservation-stack-inserter"}
       },
       order = "a-d-a"
   }
@@ -814,5 +815,8 @@ data:extend(technologies)
 if mods["space-age"] then
     table.insert(data.raw["technology"]["space-platform"].effects,
         {type = "unlock-recipe", recipe = "preservation-platform-warehouse"}
+    )
+    table.insert(data.raw["technology"]["preservation-inserter"].effects,
+        {type = "unlock-recipe", recipe = "preservation-bulk-inserter"}
     )
 end

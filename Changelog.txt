@@ -1,4 +1,15 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.2.1
+  Categories:
+    - Bug Fixes, Modifications
+  Date: 2025-1-13:
+  Changes:
+    - Bug Fixes:
+      - Fix the crash when mining a fridge
+      - Fix the crash when disabling space-age mod
+    - Modifications:
+      - Clean up the code
+---------------------------------------------------------------------------------------------------
 Version: 0.2.0
   Categories:
     - Features, Bug Fixes, Modifications
