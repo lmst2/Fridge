@@ -768,7 +768,8 @@ local technologies = {
       effects = {
           {type = "unlock-recipe", recipe = "preservation-inserter"},
           {type = "unlock-recipe", recipe = "preservation-long-inserter"},
-          {type = "unlock-recipe", recipe = "preservation-stack-inserter"}
+          {type = "unlock-recipe", recipe = "preservation-stack-inserter"},
+          {type = "unlock-recipe", recipe = "preservation-bulk-inserter"}
       },
       order = "a-d-a"
   }
@@ -792,8 +793,7 @@ if mods["space-age"] then
           time = 60
       },
       effects = {
-          {type = "unlock-recipe", recipe = "preservation-platform-warehouse"},
-          {type = "unlock-recipe", recipe = "preservation-bulk-inserter"},
+          {type = "unlock-recipe", recipe = "preservation-platform-warehouse"}
       }
   })
 end
