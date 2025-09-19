@@ -774,6 +774,30 @@ local technologies = {
   }
 }
 
+-- Preservation platform-cargo-bay
+if mods["space-age"] then
+  table.insert(technologies, {
+      type = "technology",
+      name = "preservation-platform-warehouse",
+      icons = {{
+          icon = data.raw["cargo-bay"]["cargo-bay"].icon,
+          icon_size = data.raw["cargo-bay"]["cargo-bay"].icon_size,
+          tint = {r=0.6, g=0.8, b=1.0, a=0.8},
+      }},
+      icon_size = 256,
+      prerequisites = {"preservation-warehouse-tech"},
+      unit = {
+          count = 1500,
+          ingredients = ingredPW,
+          time = 60
+      },
+      effects = {
+          {type = "unlock-recipe", recipe = "preservation-platform-warehouse"},
+          {type = "unlock-recipe", recipe = "preservation-bulk-inserter"},
+      }
+  })
+end
+
 
 --[[ ============================================================================
  Register Prototypes
@@ -810,13 +834,3 @@ data:extend(recipes)
 -- Register technologies
 data:extend(technologies)
 
-
--- Add space platform warehouse to space age technology if mod is present
-if mods["space-age"] then
-    table.insert(data.raw["technology"]["space-platform"].effects,
-        {type = "unlock-recipe", recipe = "preservation-platform-warehouse"}
-    )
-    table.insert(data.raw["technology"]["preservation-inserter"].effects,
-        {type = "unlock-recipe", recipe = "preservation-bulk-inserter"}
-    )
-end
