@@ -1,12 +1,12 @@
 {
   "name": "Fridge",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "title": "Cold Chain Logistics (Fridge)",
   "author": "LightningMaster",
   "contact": "",
   "homepage": "",
   "description": "Having produced argicultural science pack spoiled? No worries! This mod can cover you up! Adds a series of refrigeration technologies to help you complete the full cold chain logistics!",
-  "factorio_version": "2.0",
+  "factorio_version": "2.1",
   "spoiling_required": true,
-  "dependencies": ["base >= 2.0.2", "?space-age"]
+  "dependencies": ["base >= 2.1.2", "?space-age"]
 }

@@ -249,6 +249,31 @@ if mods["space-age"] then
   space_warehouse.surface_conditions = {}
 end
 
+--[[ ------------------------- Space Platform Warehouse ------------------------- ]]--
+
+-- Create space platform warehouse (Space Age mod compatibility)
+local space_warehouse_unloading = nil
+if mods["space-age"] then
+  -- Create entity from cargo bay base
+  space_warehouse_unloading = table.deepcopy(data.raw["cargo-bay"]["landing-pad-unloading-bay"])
+  space_warehouse_unloading.type = "cargo-bay"
+  space_warehouse_unloading.name = "preservation-platform-unloading-bay"
+  
+  -- Apply preservation tint to all graphics
+  apply_preservation_tint(space_warehouse_unloading.graphics_set.picture)
+  apply_preservation_tint(space_warehouse_unloading.graphics_set.connections)
+  
+  --for _, hatch_def in pairs(space_warehouse_unloading.hatch_definitions) do
+  --    apply_preservation_tint(hatch_def.hatch_graphics.layers)
+  --end
+  
+  -- Configure basic properties
+  space_warehouse_unloading.allow_unloading=true
+  space_warehouse_unloading.minable = {mining_time = 8, result = "preservation-platform-unloading-bay"}
+  space_warehouse_unloading.inventory_size_bonus = settings.platform_bonus_capacity
+  space_warehouse_unloading.surface_conditions = {}
+end
+
 
 --[[ ------------------------- Preservation Wagon ------------------------- ]]--
 
@@ -263,8 +288,8 @@ preservation_wagon.allow_manual_color = false
 
 -- Base preservation inserter (based on fast inserter)
 local preservation_inserter = table.deepcopy(data.raw["inserter"]["fast-inserter"])
-preservation_inserter.name = "preservation-inserter"
-preservation_inserter.minable.result = "preservation-inserter"
+preservation_inserter.name = "preservation-fast-inserter"
+preservation_inserter.minable.result = "preservation-fast-inserter"
 
 -- Configure energy usage
 preservation_inserter.energy_per_movement = "10kJ"
@@ -280,7 +305,7 @@ apply_preservation_tint(preservation_inserter.platform_picture.sheet)
 apply_preservation_tint(preservation_inserter.hand_base_picture)
 apply_preservation_tint(preservation_inserter.hand_open_picture)
 apply_preservation_tint(preservation_inserter.hand_closed_picture)
-preservation_inserter.next_upgrade = "preservation-stack-inserter"
+preservation_inserter.next_upgrade = "preservation-bulk-inserter"
 
 -- Long-range preservation inserter (based on long-handed inserter)
 local preservation_long_inserter = table.deepcopy(data.raw["inserter"]["long-handed-inserter"])
@@ -304,8 +329,8 @@ apply_preservation_tint(preservation_long_inserter.hand_closed_picture)
 
 -- Stack preservation inserter (based on stack inserter)
 local preservation_stack_inserter = table.deepcopy(data.raw["inserter"]["bulk-inserter"])
-preservation_stack_inserter.name = "preservation-stack-inserter"
-preservation_stack_inserter.minable.result = "preservation-stack-inserter"
+preservation_stack_inserter.name = "preservation-bulk-inserter"
+preservation_stack_inserter.minable.result = "preservation-bulk-inserter"
 
 -- Configure energy usage
 preservation_stack_inserter.energy_per_movement = "25kJ"
@@ -323,15 +348,15 @@ apply_preservation_tint(preservation_stack_inserter.hand_open_picture)
 apply_preservation_tint(preservation_stack_inserter.hand_closed_picture)
 
 if mods["space-age"] then
-  preservation_stack_inserter.next_upgrade = "preservation-bulk-inserter"
+  preservation_stack_inserter.next_upgrade = "preservation-stack-inserter"
 end
 
 -- Bulk preservation inserter (based on stack inserter)
 local preservation_bulk_inserter = nil
 if mods["space-age"] then
   preservation_bulk_inserter = table.deepcopy(data.raw["inserter"]["stack-inserter"])
-  preservation_bulk_inserter.name = "preservation-bulk-inserter"
-  preservation_bulk_inserter.minable.result = "preservation-bulk-inserter"
+  preservation_bulk_inserter.name = "preservation-stack-inserter"
+  preservation_bulk_inserter.minable.result = "preservation-stack-inserter"
 
   -- Configure energy usage
   preservation_bulk_inserter.energy_per_movement = "40kJ"
@@ -362,7 +387,7 @@ local items = {
       icon = "__Fridge__/graphics/icon/refrigerater.png",
       icon_size = 64,    
       subgroup = "storage",
-      order = "a[items]-c[refrigerater]",
+      order = "a[items]-d[refrigerater]",
       place_result = "refrigerater",
       stack_size = 50
   },
@@ -374,7 +399,7 @@ local items = {
       icon = "__Fridge__/graphics/icon/large-chest.png",
       icon_size = 256,
       subgroup = "storage",
-      order = "a[items]-d[preservation-warehouse]",
+      order = "a[items]-e[preservation-warehouse]",
       place_result = "preservation-warehouse",
       stack_size = 10
   },
@@ -388,8 +413,8 @@ local items = {
           icon_size = preservation_wagon.icon_size,
           tint = {r=0.6, g=0.8, b=1.0, a=0.8},
       }},
-      subgroup = "storage",
-      order = "a[items]-d[preservation-wagon]",
+      subgroup = "train-transport",
+      order = "d[items]-d[preservation-wagon]",
       place_result = "preservation-wagon",
       stack_size = 5
   },
@@ -397,15 +422,15 @@ local items = {
   -- Basic preservation inserter
   {
       type = "item",
-      name = "preservation-inserter",
+      name = "preservation-fast-inserter",
       icons = {{
           icon = data.raw["inserter"]["fast-inserter"].icon,
           icon_size = data.raw["inserter"]["fast-inserter"].icon_size,
           tint = {r=0.6, g=0.8, b=1.0, a=0.8}
       }},
       subgroup = "inserter",
-      order = "d[preservation]-a[preservation-inserter]",
-      place_result = "preservation-inserter",
+      order = "d[preservation]-a[preservation-fast-inserter]",
+      place_result = "preservation-fast-inserter",
       stack_size = 50
   },
 
@@ -424,18 +449,18 @@ local items = {
       stack_size = 50
   },
 
-  -- Stack preservation inserter
+  -- Bulk preservation inserter
   {
       type = "item",
-      name = "preservation-stack-inserter",
+      name = "preservation-bulk-inserter",
       icons = {{
           icon = data.raw["inserter"]["bulk-inserter"].icon,
           icon_size = data.raw["inserter"]["bulk-inserter"].icon_size,
           tint = {r=0.6, g=0.8, b=1.0, a=0.8}
       }},
       subgroup = "inserter",
-      order = "d[preservation]-c[preservation-stack-inserter]",
-      place_result = "preservation-stack-inserter", 
+      order = "d[preservation]-c[preservation-bulk-inserter]",
+      place_result = "preservation-bulk-inserter", 
       stack_size = 50
   },
 }
@@ -453,7 +478,7 @@ for _, fridge_type in pairs(logistic_fridge_types) do
           }
       },
       subgroup = "storage",
-      order = "a[items]-c[" .. fridge_type.name .. "]",
+      order = "a[items]-d[" .. fridge_type.name .. "]",
       place_result = fridge_type.name,
       stack_size = 50
   })
@@ -471,23 +496,40 @@ if mods["space-age"] then
               tint = {r=0.6, g=0.8, b=1.0, a=0.8},
           }
       },
-      subgroup = "storage",
-      order = "a[items]-e[preservation-platform-warehouse]",
+      group = "space" ,
+      subgroup = "space-platform",
+      order = "c[items]-c[preservation-platform-warehouse]",
       place_result = "preservation-platform-warehouse",
       stack_size = 10
   })
-  table.insert(items, {
+  table.insert(items, {     
       type = "item",
-      name = "preservation-bulk-inserter",
+      name = "preservation-stack-inserter",
       icons = {{
           icon = data.raw["inserter"]["stack-inserter"].icon,
           icon_size = data.raw["inserter"]["stack-inserter"].icon_size,
           tint = {r=0.6, g=0.8, b=1.0, a=0.8}
       }},
       subgroup = "inserter",
-      order = "d[preservation]-d[preservation-bulk-inserter]",
-      place_result = "preservation-bulk-inserter",
+      order = "d[preservation]-d[preservation-stack-inserter]",
+      place_result = "preservation-stack-inserter",
       stack_size = 50
+  })
+    table.insert(items, {
+      type = "item",
+      name = "preservation-platform-unloading-bay",
+      icons = {
+          {
+              icon = data.raw["cargo-bay"]["landing-pad-unloading-bay"].icon, 
+              icon_size = data.raw["cargo-bay"]["landing-pad-unloading-bay"].icon_size,
+              tint = {r=0.6, g=0.8, b=1.0, a=0.8},
+          }
+      },
+      group = "space",
+      subgroup = "space-platform",
+      order = "d[items]-d[landing-pad-unloading-bay]",
+      place_result = "preservation-platform-unloading-bay",
+      stack_size = 10
   })
 end
 
@@ -544,14 +586,14 @@ local recipes = {
   -- Basic preservation inserter
   {
       type = "recipe",
-      name = "preservation-inserter",
+      name = "preservation-fast-inserter",
       enabled = false,
       ingredients = {
           {type = "item", name = "fast-inserter", amount = 1},
           {type = "item", name = "electronic-circuit", amount = 2},
           {type = "item", name = "refrigerater", amount = 1}
       },
-      results = {{type = "item", name = "preservation-inserter", amount = 1}}
+      results = {{type = "item", name = "preservation-fast-inserter", amount = 1}}
   },
 
   -- Long-range preservation inserter
@@ -570,14 +612,14 @@ local recipes = {
   -- Stack preservation inserter
   {
       type = "recipe",
-      name = "preservation-stack-inserter",
+      name = "preservation-bulk-inserter",
       enabled = false,
       ingredients = {
           {type = "item", name = "bulk-inserter", amount = 1},
           {type = "item", name = "advanced-circuit", amount = 2},
           {type = "item", name = "refrigerater", amount = 1}
       },
-      results = {{type = "item", name = "preservation-stack-inserter", amount = 1}}
+      results = {{type = "item", name = "preservation-bulk-inserter", amount = 1}}
   },
 
 }
@@ -605,13 +647,13 @@ if mods["space-age"] then
       enabled = false,
       ingredients = {
           {type = "item", name = "preservation-warehouse", amount = 1},
-          {type = "item", name = "iron-plate", amount = 100}
+          {type = "item", name = "cargo-bay", amount = 1}
       },
       results = {{type = "item", name = "preservation-platform-warehouse", amount = 1}}
   })
   table.insert(recipes, {
       type = "recipe",
-      name = "preservation-bulk-inserter",
+      name = "preservation-stack-inserter",
       enabled = false,
       ingredients = {
           {type = "item", name = "stack-inserter", amount = 1},
@@ -619,7 +661,17 @@ if mods["space-age"] then
           {type = "item", name = "processing-unit", amount = 1},
           {type = "item", name = "refrigerater", amount = 1}
       },
-      results = {{type = "item", name = "preservation-bulk-inserter", amount = 1}}
+      results = {{type = "item", name = "preservation-stack-inserter", amount = 1}}
+  })
+  table.insert(recipes, {
+      type = "recipe",
+      name = "preservation-platform-unloading-bay",
+      enabled = false,
+      ingredients = {
+          {type = "item", name = "preservation-warehouse", amount = 1},
+          {type = "item", name = "landing-pad-unloading-bay", amount = 1}
+      },
+      results = {{type = "item", name = "preservation-platform-unloading-bay", amount = 1}}
   })
 end
 
@@ -748,7 +800,7 @@ local technologies = {
   -- Preservation inserters
   {
       type = "technology",
-      name = "preservation-inserter",
+      name = "preservation-fast-inserter",
       icon_size = 256,
       icon_mipmaps = 4,
       icons = {{
@@ -766,10 +818,10 @@ local technologies = {
           time = 30
       },
       effects = {
-          {type = "unlock-recipe", recipe = "preservation-inserter"},
+          {type = "unlock-recipe", recipe = "preservation-fast-inserter"},
           {type = "unlock-recipe", recipe = "preservation-long-inserter"},
-          {type = "unlock-recipe", recipe = "preservation-stack-inserter"},
-          {type = "unlock-recipe", recipe = "preservation-bulk-inserter"}
+          {type = "unlock-recipe", recipe = "preservation-bulk-inserter"},
+          {type = "unlock-recipe", recipe = "preservation-stack-inserter"}
       },
       order = "a-d-a"
   }
@@ -793,7 +845,8 @@ if mods["space-age"] then
           time = 60
       },
       effects = {
-          {type = "unlock-recipe", recipe = "preservation-platform-warehouse"}
+          {type = "unlock-recipe", recipe = "preservation-platform-warehouse"},
+          {type = "unlock-recipe", recipe = "preservation-platform-unloading-bay"}
       }
   })
 end
@@ -823,6 +876,8 @@ end
 -- Register space platform warehouse if mod is present
 if space_warehouse then
   data:extend({space_warehouse})
+  data:extend({space_warehouse_unloading})
+
 end
 
 -- Register items
