@@ -109,6 +109,7 @@ jobs:
             --version "${{ steps.version.outputs.version }}" \
             --date "$(date -u +%Y-%m-%d)" \
             --ai-file ai.txt \
+            --drafts-file drafts.txt \
             --commits-file commits.txt \
             --changelog changelog.txt
 
@@ -140,6 +141,7 @@ jobs:
             --exclude='user_prompt.txt' \
             --exclude='attributed_commits.txt' \
             --exclude='contributors.txt' \
+            --exclude='drafts.txt' \
             ./ "$STAGE/"
           rm -f "$STAGE/Changelog.txt"   # keep only the lowercase changelog.txt
           ( cd build && zip -r -X "../${MOD}_${VER}.zip" "${MOD}_${VER}" >/dev/null )
@@ -159,7 +161,7 @@ jobs:
           VER="${{ steps.version.outputs.version }}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          rm -f commits.txt ai.txt user_prompt.txt attributed_commits.txt contributors.txt
+          rm -f commits.txt ai.txt user_prompt.txt attributed_commits.txt contributors.txt drafts.txt
           git add info.json changelog.txt
           git diff --cached --quiet || git commit -m "Release ${VER}"
           # Idempotent: a retried run (e.g. after a failed portal upload) must
