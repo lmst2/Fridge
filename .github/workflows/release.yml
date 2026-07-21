@@ -1,0 +1,187 @@
+name: Release to Factorio Mod Portal
+
+# Manual release pipeline. Run it from the Actions tab after merging PRs:
+# it bumps the version, generates a changelog entry with GitHub Models,
+# packages the mod, commits + tags the release, and uploads to the portal.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump (ignored if 'custom_version' is set)"
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      custom_version:
+        description: "Exact version like 0.3.0 (overrides bump). Leave blank to use bump."
+        type: string
+        default: ""
+      publish_to_portal:
+        description: "Upload the built zip to the Factorio mod portal"
+        type: boolean
+        default: true
+      dry_run:
+        description: "Preview only: build + changelog, but do NOT commit, tag, push or publish"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write   # commit the version bump + changelog and push the tag
+  models: read      # call GitHub Models for the changelog draft
+
+concurrency:
+  group: factorio-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need full history + tags to diff since last release
+
+      - name: Compute new version
+        id: version
+        run: |
+          python3 .github/scripts/bump_version.py \
+            --info info.json \
+            --bump "${{ inputs.bump }}" \
+            --custom "${{ inputs.custom_version }}" \
+            >> "$GITHUB_OUTPUT"
+
+      - name: Collect changes since last release
+        id: changes
+        run: |
+          LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+          if [ -n "$LAST_TAG" ]; then
+            echo "Diffing since $LAST_TAG"
+            RANGE="${LAST_TAG}..HEAD"
+          else
+            echo "No previous tag; using full history"
+            RANGE=""
+          fi
+          git log $RANGE --no-merges --pretty=format:'%s' > commits.txt
+          head -n 100 commits.txt > commits.trimmed && mv commits.trimmed commits.txt
+          echo "Commits considered:"; cat commits.txt
+          {
+            echo "Mod: Cold Chain Logistics (Fridge)"
+            echo "New version being released: ${{ steps.version.outputs.version }}"
+            echo ""
+            echo "Summarize the following commit messages into a player-facing changelog."
+            echo "Commit messages:"
+            cat commits.txt
+          } > user_prompt.txt
+
+      - name: Generate changelog entry (GitHub Models)
+        id: ai
+        continue-on-error: true   # fall back to the raw commit list on any failure
+        uses: actions/ai-inference@v1
+        with:
+          model: openai/gpt-4o
+          max-tokens: 800
+          system-prompt: |
+            You write changelog entries for a Factorio mod, in the official
+            Factorio changelog style. Output ONLY category blocks, nothing else:
+            no version line, no date, no separators, no prose, no code fences.
+            Each category is a single line ending with a colon, chosen ONLY from:
+              Major Features, Features, Minor Features, Graphics, Sounds,
+              Optimizations, Balancing, Changes, Bugfixes, Gui, Scripting, Locale
+            Under each category, put one "- " bullet per change, written for
+            players (concise, imperative-past, no commit hashes or author names).
+            Group related commits, drop noise like "merge", "wip", "typo".
+            Example:
+              Features:
+              - Added a freezing unloading bay for space platforms
+              Bugfixes:
+              - Fixed a crash when mining a fridge
+          prompt-file: user_prompt.txt
+
+      - name: Save model output
+        run: |
+          if [ -n "${{ steps.ai.outputs.response-file }}" ] && [ -f "${{ steps.ai.outputs.response-file }}" ]; then
+            cp "${{ steps.ai.outputs.response-file }}" ai.txt
+            echo "Model draft:"; cat ai.txt
+          else
+            echo "No model output; assemble step will fall back to the commit list."
+            : > ai.txt
+          fi
+
+      - name: Assemble & validate changelog
+        run: |
+          python3 .github/scripts/assemble_changelog.py \
+            --version "${{ steps.version.outputs.version }}" \
+            --date "$(date -u +%Y-%m-%d)" \
+            --ai-file ai.txt \
+            --commits-file commits.txt \
+            --changelog changelog.txt
+
+      - name: Write version into info.json
+        run: |
+          python3 .github/scripts/bump_version.py \
+            --info info.json \
+            --custom "${{ steps.version.outputs.version }}" \
+            --write
+
+      - name: Build mod zip
+        id: build
+        run: |
+          MOD="$(python3 -c 'import json;print(json.load(open("info.json"))["name"])')"
+          VER="${{ steps.version.outputs.version }}"
+          STAGE="build/${MOD}_${VER}"
+          mkdir -p "$STAGE"
+          rsync -a \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='build' \
+            --exclude='.gitignore' \
+            --exclude='*.zip' \
+            --exclude='commits.txt' \
+            --exclude='ai.txt' \
+            --exclude='user_prompt.txt' \
+            ./ "$STAGE/"
+          rm -f "$STAGE/Changelog.txt"   # keep only the lowercase changelog.txt
+          ( cd build && zip -r -X "../${MOD}_${VER}.zip" "${MOD}_${VER}" >/dev/null )
+          echo "zip=${MOD}_${VER}.zip" >> "$GITHUB_OUTPUT"
+          echo "mod=${MOD}" >> "$GITHUB_OUTPUT"
+          echo "Built ${MOD}_${VER}.zip"; unzip -l "${MOD}_${VER}.zip" | head -30
+
+      - name: Upload zip as build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.build.outputs.mod }}_${{ steps.version.outputs.version }}
+          path: ${{ steps.build.outputs.zip }}
+
+      - name: Commit, tag and push
+        if: ${{ inputs.dry_run == false }}
+        run: |
+          VER="${{ steps.version.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f commits.txt ai.txt user_prompt.txt
+          git add info.json changelog.txt
+          git commit -m "Release ${VER}"
+          git tag "v${VER}"
+          git push origin "HEAD:${{ github.ref_name }}"
+          git push origin "v${VER}"
+
+      - name: Publish to Factorio Mod Portal
+        if: ${{ inputs.dry_run == false && inputs.publish_to_portal == true }}
+        env:
+          FACTORIO_MOD_PLATFORM_KEY: ${{ secrets.FACTORIO_MOD_PLATFORM_KEY }}
+        run: |
+          bash .github/scripts/publish_portal.sh \
+            "${{ steps.build.outputs.mod }}" \
+            "${{ steps.build.outputs.zip }}"
+
+      - name: Summary
+        if: ${{ always() }}
+        run: |
+          {
+            echo "### Factorio release"
+            echo ""
+            echo "- Version: \`${{ steps.version.outputs.version }}\` (was \`${{ steps.version.outputs.previous }}\`)"
+            echo "- Zip: \`${{ steps.build.outputs.zip }}\`"
+            echo "- Dry run: \`${{ inputs.dry_run }}\`"
+            echo "- Published to portal: \`${{ inputs.dry_run == false && inputs.publish_to_portal == true }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,128 @@
+---------------------------------------------------------------------------------------------------
+Version: 0.2.2
+Date: 2025-01-13
+  Features:
+    - Added Freezing Unloading Bay
+  Bugfixes:
+    - Changed the name of the Bulk/Stack inserter
+  Changes:
+    - Changed preservation-inserter to preservation-fast-inserter
+    - Changed the group/subgroup of items to better represent their category
+    - Updated for Factorio 2.1
+---------------------------------------------------------------------------------------------------
+Version: 0.2.1
+Date: 2025-01-13
+  Bugfixes:
+    - Fix the crash when mining a fridge
+    - Fix the crash when disabling the space-age mod
+  Changes:
+    - Clean up the code
+---------------------------------------------------------------------------------------------------
+Version: 0.2.0
+Date: 2025-01-13
+  Features:
+    - Added preservation inserters that slow item spoilage while holding items (basic, long, stack, bulk)
+  Bugfixes:
+    - Fix newly created logistic fridges not slowing the spoil rate
+  Changes:
+    - Modify the preservation space platform's graphics to better indicate its ability
+---------------------------------------------------------------------------------------------------
+Version: 0.1.3
+Date: 2025-01-12
+  Bugfixes:
+    - Fixed the bug that the previous bugfix did not actually fix (XD)
+---------------------------------------------------------------------------------------------------
+Version: 0.1.2
+Date: 2025-01-12
+  Bugfixes:
+    - Fixed being unable to change the spoil rate back after setting it to 1 in game
+---------------------------------------------------------------------------------------------------
+Version: 0.1.1
+Date: 2025-01-10
+  Bugfixes:
+    - Fixed the crash when removing preservation wagon entities
+  Changes:
+    - Modify the thumbnail to fit cold chain logistics
+---------------------------------------------------------------------------------------------------
+Version: 0.1.0
+Date: 2025-01-10
+  Features:
+    - Add a space platform cargo bay that adds slots to the space platform hub and freezes items' spoil time
+    - Add a cargo wagon that slows the spoil rate of items inside it
+    - Add support for the Tiberium mod so the fridge uses tiberium-fuel-cell instead of uranium-fuel-cell
+  Bugfixes:
+    - Fixed the crash when the space-age DLC is disabled
+  Changes:
+    - Rename the mod to Cold Chain Logistics; it now covers local storage, cross-planet space transport, local planet railway transport, and destination warehouse storage
+    - Make the refrigerator recipe an individual technology that must be researched to unlock
+    - Show some technology recipe requirements only when the space-age DLC is enabled
+---------------------------------------------------------------------------------------------------
+Version: 0.0.12
+Date: 2024-11-20
+  Features:
+    - Add startup settings for fridge and warehouse capacity
+    - Add startup settings for warehouse power usage and power storage (keep working for a period during a power outage)
+    - Add a runtime setting for freezing rate to adjust how much the fridge slows spoilage
+    - Add more locales: de, en, es, fr, it, ja, ko, pl, pt-BR, ru, zh-CN
+  Bugfixes:
+    - Fixed the buffer logistic fridge not working
+---------------------------------------------------------------------------------------------------
+Version: 0.0.11
+Date: 2024-11-20
+  Changes:
+    - Fixed the fake power proxy remaining on the map when another mod removes the warehouse entity
+---------------------------------------------------------------------------------------------------
+Version: 0.0.10
+Date: 2024-11-20
+  Features:
+    - Added a buffer logistic fridge
+    - New implementation for capping the spoil time of items inside the fridge to its max value
+  Bugfixes:
+    - Fixed the crash when putting newly produced items with 100% spoil percent into the fridge
+    - Fixed the case when other mods remove the fridge entity without sending a notice event
+---------------------------------------------------------------------------------------------------
+Version: 0.0.9
+Date: 2024-11-13
+  Changes:
+    - Merge a PR that adds 10 trash slots to the requester fridge (credit @Retagin)
+    - Fixed inserters unable to interact with the warehouse
+---------------------------------------------------------------------------------------------------
+Version: 0.0.8
+Date: 2024-11-09
+  Graphics:
+    - Add new, advanced graphics for the freezer warehouse
+---------------------------------------------------------------------------------------------------
+Version: 0.0.7
+Date: 2024-11-01
+  Optimizations:
+    - Updated locales and item descriptions
+---------------------------------------------------------------------------------------------------
+Version: 0.0.6
+Date: 2024-11-01
+  Bugfixes:
+    - Fixed the crash when putting a newly produced item with 100% spoil percent
+---------------------------------------------------------------------------------------------------
+Version: 0.0.5
+Date: 2024-11-01
+  Bugfixes:
+    - Fixed the crash when putting a newly produced item with 100% spoil percent (not working)
+---------------------------------------------------------------------------------------------------
+Version: 0.0.4
+Date: 2024-11-01
+  Bugfixes:
+    - Fixed startup error for entity prototype "warehouse-power-proxy" (roboport): next_upgrade cannot be set when flag 'not-upgradable' is set
+---------------------------------------------------------------------------------------------------
+Version: 0.0.3
+Date: 2024-10-31
+  Features:
+    - Added a big freezer warehouse to the late-game tech tree that can completely stop the spoilage of items inside it
+---------------------------------------------------------------------------------------------------
+Version: 0.0.2
+Date: 2024-10-31
+  Features:
+    - Added 2 types of logistic fridges (passive provider, requester)
+---------------------------------------------------------------------------------------------------
+Version: 0.0.1
+Date: 2024-10-30
+  Features:
+    - Add a fridge entity that slows the spoil time of items inside it by 20 times
