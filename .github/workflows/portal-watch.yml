@@ -1,0 +1,76 @@
+name: Watch mod portal discussions
+
+# The Factorio mod portal has no API, no RSS and no webhooks for discussions,
+# so we poll the rendered page and mirror new activity into GitHub issues.
+# That way feedback lands where the code is, instead of only on the portal.
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"   # every 6 hours
+  workflow_dispatch:
+    inputs:
+      baseline_only:
+        description: "Just refresh the snapshot without opening any issues"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write   # commit the snapshot
+  issues: write     # file and comment on issues
+
+concurrency:
+  group: portal-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure labels exist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create portal-feedback --color 1D76DB \
+            --description "Mirrored from the Factorio mod portal" 2>/dev/null || true
+          gh label create needs-human --color D93F0B \
+            --description "Automation could not resolve this" 2>/dev/null || true
+
+      - name: Poll the portal
+        id: poll
+        run: |
+          python3 .github/scripts/watch_discussion.py \
+            --mod Fridge \
+            --state .github/state/discussion.json \
+            --maintainer LightningMaster \
+            > changed.json
+          echo "count=$(python3 -c 'import json;print(len(json.load(open("changed.json"))))')" >> "$GITHUB_OUTPUT"
+          python3 -c "
+          import json
+          for t in json.load(open('changed.json')):
+              print(f\"{t['change']:<12} {t['title']}\")"
+
+      - name: File / update issues
+        if: ${{ inputs.baseline_only != true && steps.poll.outputs.count != '0' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 .github/scripts/sync_issues.py < changed.json
+
+      - name: Commit the snapshot
+        run: |
+          rm -f changed.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/state/discussion.json
+          git diff --cached --quiet || {
+            git commit -m "Update portal discussion snapshot"
+            git push origin "HEAD:${{ github.ref_name }}"
+          }
+
+      - name: Summary
+        if: ${{ always() }}
+        run: |
+          echo "### Portal watch" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Changed threads: \`${{ steps.poll.outputs.count }}\`" >> "$GITHUB_STEP_SUMMARY"
