@@ -34,8 +34,9 @@ Factorio format and renamed. Don't re-add the capitalised name.
 What a full run does, in order:
 
 1. Computes the new version.
-2. Collects commit messages since the last `v*` tag.
-3. Asks GitHub Models to turn them into Factorio-format changelog bullets.
+2. Collects commit messages since the **changelog baseline** (see below).
+3. Asks GitHub Models to turn them into Factorio-format changelog bullets,
+   crediting external contributors with `(thanks @handle)`.
 4. Assembles + **validates** the changelog (`assemble_changelog.py` re-indents the
    model output to exact Factorio format; if the model produced nothing usable it
    falls back to the raw commit list; the build fails if the result is malformed).
@@ -47,6 +48,34 @@ What a full run does, in order:
 **Tip:** run once with `dry_run = true` to eyeball the generated changelog and the
 zip contents, then run for real. The portal rejects re-uploading a version that
 already exists, so the version must be new on every real run.
+
+## The changelog baseline
+
+A new entry must describe *only what is not already written down*. Tags alone
+are not enough: a contributor often documents their own work inside their PR,
+and that happens with no tag involved. So the baseline is the **most recent of**:
+
+- the commit that last touched `changelog.txt` — if a contributor already wrote
+  their entry, everything up to and including that commit is already documented
+- the last `v*` release tag — a `skip_changelog` release edits no changelog, so
+  the tag is the newer marker in that case
+
+Everything after that baseline goes into the new entry. Worked examples:
+
+| Situation | Baseline used | Result |
+|---|---|---|
+| Contributor's PR wrote its own changelog entry, then you make more changes | their changelog commit | only *your* later changes are described |
+| Normal release, then more work | the release commit / tag | only work since the release |
+| `skip_changelog` release (changelog untouched), then more work | the `v*` tag | only work since the release |
+
+### Crediting contributors
+
+`collect_changes.sh` reads `Merge pull request #N from <user>/<branch>` commits in
+range to find external contributors (maintainer handles are passed in and
+filtered out), and passes commit subjects with `[by Author]` attribution. The
+model appends `(thanks @handle)` **only** to bullets a listed contributor
+actually authored — if their work fell before the baseline it is already
+documented, and nothing is added.
 
 ## Changelog: how the LLM part works
 
@@ -64,6 +93,7 @@ already exists, so the version must be new on every real run.
 | File | Role |
 |------|------|
 | `.github/scripts/bump_version.py` | Compute / write the `X.Y.Z` version in `info.json`. |
+| `.github/scripts/collect_changes.sh` | Pick the changelog baseline, gather commits and external contributors. |
 | `.github/scripts/assemble_changelog.py` | Turn model/commit text into a valid entry and prepend it. |
 | `.github/scripts/validate_changelog.py` | Strict Factorio-format validator (also runnable standalone). |
 | `.github/scripts/publish_portal.sh` | `init` + `upload` against the mod-portal v2 API. |
