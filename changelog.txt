@@ -2,7 +2,7 @@
 Version: 0.3.0
 Date: 2026-07-21
   Features:
-    - Added Freezing Unloading Bay
+    - Added Freezing Unloading Bay (thanks @Lord-Curdin)
   Bugfixes:
     - Changed the name of the Bulk/Stack inserter
   Changes:
