@@ -174,9 +174,11 @@ jobs:
           rm -f commits.txt ai.txt user_prompt.txt
           git add info.json changelog.txt
           git diff --cached --quiet || git commit -m "Release ${VER}"
-          git tag "v${VER}"
+          # Idempotent: a retried run (e.g. after a failed portal upload) must
+          # not die because the commit/tag already exist.
+          git rev-parse -q --verify "refs/tags/v${VER}" >/dev/null || git tag "v${VER}"
           git push origin "HEAD:${{ github.ref_name }}"
-          git push origin "v${VER}"
+          git push origin "v${VER}" || echo "tag v${VER} already pushed"
 
       - name: Publish to Factorio Mod Portal
         if: ${{ inputs.dry_run == false && inputs.publish_to_portal == true }}
