@@ -471,11 +471,15 @@ local function init_entities()
               storage.PlatformWarehouses[surface.name] = platform_warehouses
           end
                     -- Find and register platform warehouses
-          local unloading_bay = surface.find_entities_filtered{
-              name = "preservation-platform-unloading-bay"
-          }
-          if #unloading_bay > 0 then
-              storage.PlatformWarehouses[surface.name] = unloading_bay
+          -- Only exists on Factorio 2.1+, where Space Age ships the cargo bay
+          -- this entity is built from.
+          if prototypes.entity["preservation-platform-unloading-bay"] then
+              local unloading_bay = surface.find_entities_filtered{
+                  name = "preservation-platform-unloading-bay"
+              }
+              if #unloading_bay > 0 then
+                  storage.PlatformWarehouses[surface.name] = unloading_bay
+              end
           end
         end
         
@@ -513,7 +517,9 @@ local function init_events()
 
     if script.active_mods["space-age"] then
       table.insert(entity_filter, { filter = "name", name = "preservation-platform-warehouse" })
-      table.insert(entity_filter, { filter = "name", name = "preservation-platform-unloading-bay" })
+      if prototypes.entity["preservation-platform-unloading-bay"] then
+        table.insert(entity_filter, { filter = "name", name = "preservation-platform-unloading-bay" })
+      end
       table.insert(entity_filter, { filter = "name", name = "preservation-stack-inserter" })
     end
     

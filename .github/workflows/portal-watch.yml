@@ -4,9 +4,9 @@ name: Watch mod portal discussions
 # so we poll the rendered page and mirror new activity into GitHub issues.
 # That way feedback lands where the code is, instead of only on the portal.
 
+# Polling moved to the maintainer's own machine, which wakes a local agent on
+# change. Kept here as a manual fallback for re-baselining the snapshot.
 on:
-  schedule:
-    - cron: "17 */6 * * *"   # every 6 hours
   workflow_dispatch:
     inputs:
       baseline_only:

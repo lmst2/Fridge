@@ -253,7 +253,14 @@ end
 
 -- Create space platform warehouse (Space Age mod compatibility)
 local space_warehouse_unloading = nil
-if mods["space-age"] then
+-- The Freezing Unloading Bay is built from landing-pad-unloading-bay, which
+-- Space Age only ships on Factorio 2.1 and later. Guard on that prototype
+-- existing rather than on the mod being present, so the rest of the mod still
+-- loads on 2.0 and simply does not offer this one entity.
+local has_unloading_bay = mods["space-age"]
+  and data.raw["cargo-bay"]
+  and data.raw["cargo-bay"]["landing-pad-unloading-bay"] ~= nil
+if has_unloading_bay then
   -- Create entity from cargo bay base
   space_warehouse_unloading = table.deepcopy(data.raw["cargo-bay"]["landing-pad-unloading-bay"])
   space_warehouse_unloading.type = "cargo-bay"
@@ -515,6 +522,7 @@ if mods["space-age"] then
       place_result = "preservation-stack-inserter",
       stack_size = 50
   })
+    if has_unloading_bay then
     table.insert(items, {
       type = "item",
       name = "preservation-platform-unloading-bay",
@@ -531,6 +539,7 @@ if mods["space-age"] then
       place_result = "preservation-platform-unloading-bay",
       stack_size = 10
   })
+    end
 end
 
 
@@ -663,6 +672,7 @@ if mods["space-age"] then
       },
       results = {{type = "item", name = "preservation-stack-inserter", amount = 1}}
   })
+  if has_unloading_bay then
   table.insert(recipes, {
       type = "recipe",
       name = "preservation-platform-unloading-bay",
@@ -673,6 +683,7 @@ if mods["space-age"] then
       },
       results = {{type = "item", name = "preservation-platform-unloading-bay", amount = 1}}
   })
+  end
 end
 
 
@@ -835,6 +846,13 @@ local technologies = {
 
 -- Preservation platform-cargo-bay
 if mods["space-age"] then
+  local platform_warehouse_unlocks = {
+      {type = "unlock-recipe", recipe = "preservation-platform-warehouse"}
+  }
+  if has_unloading_bay then
+      table.insert(platform_warehouse_unlocks,
+          {type = "unlock-recipe", recipe = "preservation-platform-unloading-bay"})
+  end
   table.insert(technologies, {
       type = "technology",
       name = "preservation-platform-warehouse",
@@ -850,10 +868,7 @@ if mods["space-age"] then
           ingredients = ingredPW,
           time = 60
       },
-      effects = {
-          {type = "unlock-recipe", recipe = "preservation-platform-warehouse"},
-          {type = "unlock-recipe", recipe = "preservation-platform-unloading-bay"}
-      }
+      effects = platform_warehouse_unlocks
   })
 end
 
@@ -882,7 +897,9 @@ end
 -- Register space platform warehouse if mod is present
 if space_warehouse then
   data:extend({space_warehouse})
-  data:extend({space_warehouse_unloading})
+  if has_unloading_bay then
+    data:extend({space_warehouse_unloading})
+  end
 
 end
 
