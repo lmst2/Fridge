@@ -169,10 +169,13 @@ jobs:
               --exclude='./drafts.txt' \
               -cf - . | tar -C "$stage" -xf -
             rm -f "$stage/Changelog.txt"
-            python3 - "$stage/info.json" "$target" "$base" <<'PYEOF'
+            python3 - "$stage/info.json" "$target" "$base" "$VER" <<'PYEOF'
           import json, sys
-          path, target, base = sys.argv[1], sys.argv[2], sys.argv[3]
+          path, target, base, ver = sys.argv[1:5]
           d = json.load(open(path))
+          # Each branch ships under its own version: the portal will not accept
+          # the same version number twice, whatever factorio_version it carries.
+          d["version"] = ver
           d["factorio_version"] = target
           d["dependencies"] = [f"base >= {base}"] + [
               x for x in d.get("dependencies", []) if not x.startswith("base")]
@@ -190,14 +193,15 @@ jobs:
               unzip -l "$zipname" | grep -q "${MOD}_${VER}/${req}" \
                 || { echo "::error::$zipname is missing $req"; exit 1; }
             done
-            unzip -p "$zipname" "${MOD}_${VER}/info.json" \
-              | python3 -c "
-          import json,sys
-          d=json.load(sys.stdin)
-          assert d['factorio_version']=='$target', d['factorio_version']
-          assert d['version']=="$VER", d['version']
-          print(f\"    verified: {d['name']} {d['version']} for Factorio {d['factorio_version']} ({len(sys.argv)})\")" \
+            unzip -p "$zipname" "${MOD}_${VER}/info.json" > /tmp/verify.json
+            python3 - /tmp/verify.json "$target" "$VER" <<'PYEOF' \
               || { echo "::error::$zipname failed info.json verification"; exit 1; }
+          import json, sys
+          d = json.load(open(sys.argv[1]))
+          assert d["factorio_version"] == sys.argv[2], d["factorio_version"]
+          assert d["version"] == sys.argv[3], d["version"]
+          print(f"    verified: {d['name']} {d['version']} for Factorio {d['factorio_version']}")
+          PYEOF
             echo "built $zipname ($n entries, factorio_version=${target}, base >= ${base})"
           }
 
