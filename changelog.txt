@@ -1,4 +1,11 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.3.1
+Date: 2026-07-21
+  Changes:
+    - Ensured compatibility with both Factorio 2.0 and 2.1.
+  Bugfixes:
+    - Fixed an issue where the mod failed to load when Space Age was not installed.
+---------------------------------------------------------------------------------------------------
 Version: 0.3.0
 Date: 2026-07-21
   Features:
