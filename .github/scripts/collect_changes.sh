@@ -34,6 +34,10 @@ git log "${RANGE[@]+"${RANGE[@]}"}" --no-merges --pretty=format:'%s' > commits.t
 head -n 100 commits.txt > .t && mv .t commits.txt
 
 git log "${RANGE[@]+"${RANGE[@]}"}" --no-merges --pretty=format:'%s [by %an]' > .a || true
+# Rewrite bot and AI author names before the model ever sees them. Filtering
+# only the contributor list is not enough: the model will happily invent a
+# credit from an attribution tag, which is how "(thanks @Claude)" got written.
+sed -i -E 's/\[by [^]]*([Cc]laude|GPT|Codex|Copilot|Cursor|Devin|[Bb]ot|github-actions)[^]]*\]/[by maintainer]/g' .a
 head -n 100 .a > attributed_commits.txt && rm -f .a
 
 # Credit real people only. Bots and AI coding agents never get thanked, even
@@ -106,5 +110,9 @@ echo "External contributors:"; cat contributors.txt; echo
     echo "Credit only the human handles listed above. Never thank an AI coding"
     echo "assistant or bot (Claude, GPT, Copilot, Cursor, Devin, dependabot,"
     echo "github-actions, ...) even if one appears as a commit author."
+  else
+    echo ""
+    echo "No external contributors in this release. Do not thank anyone, and do"
+    echo "not add any \"(thanks ...)\" text to any bullet."
   fi
 } > user_prompt.txt
