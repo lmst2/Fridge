@@ -53,6 +53,16 @@ head -n 100 commits.txt > .commits.tmp && mv .commits.tmp commits.txt
 git log "${RANGE[@]+"${RANGE[@]}"}" --merges --pretty=format:'%s' 2>/dev/null \
   | sed -nE 's|^Merge pull request #[0-9]+ from ([^/]+)/.*$|\1|p' \
   | sort -u > .all_contributors.tmp || true
+# Credit real people only. Bots and AI coding agents never get thanked, even
+# though they show up as commit authors and branch owners.
+is_bot() {
+  case "${1,,}" in
+    *'[bot]'*|*-bot|bot|dependabot*|renovate*|github-actions*|*'actions-user'*) return 0 ;;
+    claude*|*anthropic*|cursor*|gpt*|chatgpt*|openai*|codex*|copilot*|*-copilot|devin*|codeium*|windsurf*|aider*) return 0 ;;
+  esac
+  return 1
+}
+
 : > contributors.txt
 while read -r handle; do
   [ -z "$handle" ] && continue
@@ -60,6 +70,10 @@ while read -r handle; do
   for m in "${MAINTAINERS[@]+"${MAINTAINERS[@]}"}"; do
     if [ "${handle,,}" = "${m,,}" ]; then skip=1; break; fi
   done
+  if [ -z "$skip" ] && is_bot "$handle"; then
+    echo "Skipping non-human contributor: ${handle}"
+    skip=1
+  fi
   [ -z "$skip" ] && echo "$handle" >> contributors.txt
 done < .all_contributors.tmp
 rm -f .all_contributors.tmp
@@ -91,5 +105,10 @@ echo "External contributors:"; cat contributors.txt; echo
     echo "change. If their work is not among the commits above, add nothing -"
     echo "it was already documented in an earlier changelog entry. Never invent"
     echo "a bullet just to credit someone."
+    echo "Credit every contributor from that list who has work in this release;"
+    echo "if one bullet covers several of them, thank them all on it."
+    echo "Credit only the human handles listed above. Never thank an AI coding"
+    echo "assistant or bot (Claude, GPT, Copilot, Cursor, Devin, dependabot,"
+    echo "github-actions, ...) even if one appears as a commit author."
   fi
 } > user_prompt.txt
