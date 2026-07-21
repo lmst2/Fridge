@@ -31,11 +31,19 @@ if [[ -z "$UPLOAD_URL" ]]; then
 fi
 
 echo "==> uploading $ZIP"
-UP_JSON="$(curl -sS --fail-with-body \
+# Capture the body and status separately: curl's --fail-with-body exits before
+# the caller sees why, and "HTTP 400" alone is not a diagnosis.
+UP_JSON="$(curl -sS -w '\n%{http_code}' \
   -H "Authorization: Bearer ${FACTORIO_MOD_PLATFORM_KEY}" \
   -F "file=@${ZIP}" \
   "${UPLOAD_URL}")"
-echo "upload response: ${UP_JSON}"
+UP_CODE="$(tail -n1 <<<"$UP_JSON")"
+UP_JSON="$(sed '$d' <<<"$UP_JSON")"
+echo "upload response (HTTP ${UP_CODE}): ${UP_JSON}"
+if [ "$UP_CODE" != "200" ]; then
+  echo "::error::portal rejected ${ZIP} with HTTP ${UP_CODE}: ${UP_JSON}"
+  exit 1
+fi
 
 printf '%s' "$UP_JSON" | python3 -c '
 import sys, json
