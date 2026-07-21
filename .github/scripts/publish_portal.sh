@@ -21,7 +21,7 @@ echo "==> init upload for mod '$MOD'"
 INIT_JSON="$(curl -sS --fail-with-body \
   -H "Authorization: Bearer ${FACTORIO_MOD_PLATFORM_KEY}" \
   -F "mod=${MOD}" \
-  "${API}/init")"
+  "${API}/init_upload")"
 echo "init response: ${INIT_JSON}"
 
 UPLOAD_URL="$(printf '%s' "$INIT_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin)["upload_url"])')"
