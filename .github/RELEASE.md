@@ -29,6 +29,7 @@ Factorio format and renamed. Don't re-add the capitalised name.
 | `bump` | `patch` / `minor` / `major` — how to raise the version from `info.json`. |
 | `custom_version` | Exact version like `0.3.0`. Overrides `bump` when set. |
 | `publish_to_portal` | Upload the built zip to the portal (default on). |
+| `skip_changelog` | Ship `changelog.txt` exactly as committed — no entry is generated. Use it when you've hand-written the entry. |
 | `dry_run` | Build + generate changelog only. No commit/tag/push, no publish. Use this to preview. |
 
 What a full run does, in order:
@@ -46,36 +47,49 @@ What a full run does, in order:
 8. Uploads the zip to the mod portal.
 
 **Tip:** run once with `dry_run = true` to eyeball the generated changelog and the
-zip contents, then run for real. The portal rejects re-uploading a version that
-already exists, so the version must be new on every real run.
+zip contents, then run for real. The portal rejects uploading a version that is
+already published, so each real run needs a new version — but if you delete a
+release on the portal first, that same version number can be re-uploaded (this
+was verified when 0.3.0 was re-published to add a contributor credit).
 
 ## The changelog baseline
 
-A new entry must describe *only what is not already written down*. Tags alone
-are not enough: a contributor often documents their own work inside their PR,
-and that happens with no tag involved. So the baseline is the **most recent of**:
+**We write the changelog and we decide the version number.** The baseline is our
+last release — the newest `v*` tag — and *everything* merged since then belongs
+in the new entry, contributors' pull requests included.
 
-- the commit that last touched `changelog.txt` — if a contributor already wrote
-  their entry, everything up to and including that commit is already documented
-- the last `v*` release tag — a `skip_changelog` release edits no changelog, so
-  the tag is the newer marker in that case
+### When a contributor writes their own changelog
 
-Everything after that baseline goes into the new entry. Worked examples:
+Contributors often add a changelog entry inside their PR, under a version number
+we never published. That entry is **reference material, not a finished entry**:
 
-| Situation | Baseline used | Result |
-|---|---|---|
-| Contributor's PR wrote its own changelog entry, then you make more changes | their changelog commit | only *your* later changes are described |
-| Normal release, then more work | the release commit / tag | only work since the release |
-| `skip_changelog` release (changelog untouched), then more work | the `v*` tag | only work since the release |
+1. `extract_drafts.py` lifts every entry above the last released version out of
+   `changelog.txt` — so a made-up version never survives as an orphan that
+   matches no release on the portal.
+2. Their text is handed to the model as reference for wording and detail, to be
+   rewritten in our voice and merged with the rest of the release.
+3. They get credited (see below).
+
+So a contributor's notes improve the entry we write; they never replace it, and
+their work is never dropped from the release notes.
 
 ### Crediting contributors
 
 `collect_changes.sh` reads `Merge pull request #N from <user>/<branch>` commits in
-range to find external contributors (maintainer handles are passed in and
-filtered out), and passes commit subjects with `[by Author]` attribution. The
-model appends `(thanks @handle)` **only** to bullets a listed contributor
-actually authored — if their work fell before the baseline it is already
-documented, and nothing is added.
+range to find contributors, and attributes every commit `[by Author]` so the
+model can match a credit to the right change. It appends `(thanks @handle)` to
+the bullet(s) describing each contributor's work, crediting **all** of them.
+
+Maintainer handles are passed in and filtered out, as are bots and AI coding
+agents (`claude*`, `gpt*`, `copilot*`, `cursor*`, `dependabot*`, `*[bot]`, …) —
+they appear as commit authors and fork owners but must never be thanked.
+
+### If the model fails
+
+The entry falls back, in order, to: the model's output → the contributor's draft
+notes → the raw commit subjects. The drafts step matters because those notes were
+already removed from `changelog.txt`, so folding them back in is what keeps a
+model outage from silently losing a contributor's detail.
 
 ## Changelog: how the LLM part works
 
@@ -93,7 +107,8 @@ documented, and nothing is added.
 | File | Role |
 |------|------|
 | `.github/scripts/bump_version.py` | Compute / write the `X.Y.Z` version in `info.json`. |
-| `.github/scripts/collect_changes.sh` | Pick the changelog baseline, gather commits and external contributors. |
+| `.github/scripts/collect_changes.sh` | Pick the baseline, gather commits, contributors and contributor drafts. |
+| `.github/scripts/extract_drafts.py` | Lift unreleased draft entries out of `changelog.txt` for reuse as reference. |
 | `.github/scripts/assemble_changelog.py` | Turn model/commit text into a valid entry and prepend it. |
 | `.github/scripts/validate_changelog.py` | Strict Factorio-format validator (also runnable standalone). |
 | `.github/scripts/publish_portal.sh` | `init` + `upload` against the mod-portal v2 API. |

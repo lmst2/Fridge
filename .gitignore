@@ -53,6 +53,7 @@ commits.txt
 contributors.txt
 attributed_commits.txt
 user_prompt.txt
+drafts.txt
 ai.txt
 build/
 *.zip

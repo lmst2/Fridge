@@ -112,6 +112,8 @@ def main():
     ap.add_argument("--version", required=True)
     ap.add_argument("--date", default=datetime.date.today().isoformat())
     ap.add_argument("--ai-file", default="")
+    ap.add_argument("--drafts-file", default="",
+                    help="contributor-written entry text, used if the model fails")
     ap.add_argument("--commits-file", default="")
     ap.add_argument("--changelog", default="changelog.txt")
     args = ap.parse_args()
@@ -124,7 +126,14 @@ def main():
     blocks = parse_blocks(ai_text)
     if blocks:
         print("Using model-generated changelog content.")
-    elif args.commits_file and os.path.exists(args.commits_file):
+    # The drafts were lifted out of changelog.txt, so if the model failed we
+    # must fold them back in here or the contributor's notes are simply lost.
+    if not blocks and args.drafts_file and os.path.exists(args.drafts_file):
+        with open(args.drafts_file, encoding="utf-8") as f:
+            blocks = parse_blocks(f.read())
+        if blocks:
+            print("Model output unusable; falling back to contributor draft notes.")
+    if not blocks and args.commits_file and os.path.exists(args.commits_file):
         print("Model output unusable; falling back to raw commit list.")
         with open(args.commits_file, encoding="utf-8") as f:
             blocks = commits_fallback(f.read())
