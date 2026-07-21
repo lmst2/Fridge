@@ -123,37 +123,75 @@ jobs:
             --custom "${{ steps.version.outputs.version }}" \
             --write
 
-      - name: Build mod zip
+      - name: Build mod zips (one per Factorio branch)
         id: build
         run: |
           MOD="$(python3 -c 'import json;print(json.load(open("info.json"))["name"])')"
           VER="${{ steps.version.outputs.version }}"
-          STAGE="build/${MOD}_${VER}"
-          mkdir -p "$STAGE"
-          rsync -a \
-            --exclude='.git' \
-            --exclude='.github' \
-            --exclude='build' \
-            --exclude='.gitignore' \
-            --exclude='*.zip' \
-            --exclude='commits.txt' \
-            --exclude='ai.txt' \
-            --exclude='user_prompt.txt' \
-            --exclude='attributed_commits.txt' \
-            --exclude='contributors.txt' \
-            --exclude='drafts.txt' \
-            ./ "$STAGE/"
-          rm -f "$STAGE/Changelog.txt"   # keep only the lowercase changelog.txt
-          ( cd build && zip -r -X "../${MOD}_${VER}.zip" "${MOD}_${VER}" >/dev/null )
-          echo "zip=${MOD}_${VER}.zip" >> "$GITHUB_OUTPUT"
+
+          # factorio_version is an exact major.minor match, not a range, so a
+          # single release cannot serve both branches. One source tree is
+          # stamped and packaged twice; the portal then hands each player the
+          # release matching their game.
+          build_variant () {
+            local target="$1" base="$2"
+            local stage="build/${target}/${MOD}_${VER}"
+            mkdir -p "$stage"
+            # tar rather than rsync: fewer assumptions about the runner, and a
+            # staging failure aborts instead of quietly producing an empty zip.
+            tar -C . \
+              --exclude='./.git' --exclude='./.github' --exclude='./build' \
+              --exclude='./.gitignore' --exclude='*.zip' \
+              --exclude='./commits.txt' --exclude='./ai.txt' --exclude='./user_prompt.txt' \
+              --exclude='./attributed_commits.txt' --exclude='./contributors.txt' \
+              --exclude='./drafts.txt' \
+              -cf - . | tar -C "$stage" -xf -
+            rm -f "$stage/Changelog.txt"
+            python3 - "$stage/info.json" "$target" "$base" <<'PYEOF'
+          import json, sys
+          path, target, base = sys.argv[1], sys.argv[2], sys.argv[3]
+          d = json.load(open(path))
+          d["factorio_version"] = target
+          d["dependencies"] = [f"base >= {base}"] + [
+              x for x in d.get("dependencies", []) if not x.startswith("base")]
+          json.dump(d, open(path, "w"), indent=2, ensure_ascii=False)
+          PYEOF
+            local zipname="${MOD}_${VER}_factorio-${target}.zip"
+            ( cd "build/${target}" && zip -r -X "../../${zipname}" "${MOD}_${VER}" >/dev/null )
+
+            # Never ship a package we have not looked inside. An empty or
+            # truncated zip is the one defect that reaches every player at once.
+            local n
+            n="$(unzip -l "$zipname" | tail -1 | awk '{print $2}')"
+            [ "${n:-0}" -ge 20 ] || { echo "::error::$zipname has only ${n:-0} entries"; exit 1; }
+            for req in info.json control.lua data.lua settings.lua changelog.txt; do
+              unzip -l "$zipname" | grep -q "${MOD}_${VER}/${req}" \
+                || { echo "::error::$zipname is missing $req"; exit 1; }
+            done
+            unzip -p "$zipname" "${MOD}_${VER}/info.json" \
+              | python3 -c "
+          import json,sys
+          d=json.load(sys.stdin)
+          assert d['factorio_version']=='$target', d['factorio_version']
+          assert d['version']=='$VER', d['version']
+          print(f\"    verified: {d['name']} {d['version']} for Factorio {d['factorio_version']} ({len(sys.argv)})\")" \
+              || { echo "::error::$zipname failed info.json verification"; exit 1; }
+            echo "built $zipname ($n entries, factorio_version=${target}, base >= ${base})"
+          }
+
+          build_variant 2.0 2.0.2
+          build_variant 2.1 2.1.2
+
           echo "mod=${MOD}" >> "$GITHUB_OUTPUT"
-          echo "Built ${MOD}_${VER}.zip"; unzip -l "${MOD}_${VER}.zip" | head -30
+          echo "zip20=${MOD}_${VER}_factorio-2.0.zip" >> "$GITHUB_OUTPUT"
+          echo "zip21=${MOD}_${VER}_factorio-2.1.zip" >> "$GITHUB_OUTPUT"
+          ls -la ./*.zip
 
       - name: Upload zip as build artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.build.outputs.mod }}_${{ steps.version.outputs.version }}
-          path: ${{ steps.build.outputs.zip }}
+          path: "*.zip"
 
       - name: Commit, tag and push
         if: ${{ inputs.dry_run == false }}
@@ -175,9 +213,10 @@ jobs:
         env:
           FACTORIO_MOD_PLATFORM_KEY: ${{ secrets.FACTORIO_MOD_PLATFORM_KEY }}
         run: |
-          bash .github/scripts/publish_portal.sh \
-            "${{ steps.build.outputs.mod }}" \
-            "${{ steps.build.outputs.zip }}"
+          # Same mod version, two releases - the portal keys them by the
+          # factorio_version inside each zip.
+          bash .github/scripts/publish_portal.sh "${{ steps.build.outputs.mod }}" "${{ steps.build.outputs.zip20 }}"
+          bash .github/scripts/publish_portal.sh "${{ steps.build.outputs.mod }}" "${{ steps.build.outputs.zip21 }}"
 
       - name: Summary
         if: ${{ always() }}
@@ -186,7 +225,7 @@ jobs:
             echo "### Factorio release"
             echo ""
             echo "- Version: \`${{ steps.version.outputs.version }}\` (was \`${{ steps.version.outputs.previous }}\`)"
-            echo "- Zip: \`${{ steps.build.outputs.zip }}\`"
+            echo "- Zips: \`${{ steps.build.outputs.zip20 }}\`, \`${{ steps.build.outputs.zip21 }}\`"
             echo "- Dry run: \`${{ inputs.dry_run }}\`"
             echo "- Published to portal: \`${{ inputs.dry_run == false && inputs.publish_to_portal == true }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
