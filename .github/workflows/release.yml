@@ -54,29 +54,13 @@ jobs:
             --custom "${{ inputs.custom_version }}" \
             >> "$GITHUB_OUTPUT"
 
-      - name: Collect changes since last release
+      - name: Collect changes since last changelog update
         if: ${{ inputs.skip_changelog == false }}
         id: changes
         run: |
-          LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
-          if [ -n "$LAST_TAG" ]; then
-            echo "Diffing since $LAST_TAG"
-            RANGE="${LAST_TAG}..HEAD"
-          else
-            echo "No previous tag; using full history"
-            RANGE=""
-          fi
-          git log $RANGE --no-merges --pretty=format:'%s' > commits.txt
-          head -n 100 commits.txt > commits.trimmed && mv commits.trimmed commits.txt
-          echo "Commits considered:"; cat commits.txt
-          {
-            echo "Mod: Cold Chain Logistics (Fridge)"
-            echo "New version being released: ${{ steps.version.outputs.version }}"
-            echo ""
-            echo "Summarize the following commit messages into a player-facing changelog."
-            echo "Commit messages:"
-            cat commits.txt
-          } > user_prompt.txt
+          bash .github/scripts/collect_changes.sh \
+            "${{ steps.version.outputs.version }}" \
+            lmst2 LightningMaster
 
       - name: Generate changelog entry (GitHub Models)
         if: ${{ inputs.skip_changelog == false }}
@@ -94,7 +78,9 @@ jobs:
               Major Features, Features, Minor Features, Graphics, Sounds,
               Optimizations, Balancing, Changes, Bugfixes, Gui, Scripting, Locale
             Under each category, put one "- " bullet per change, written for
-            players (concise, imperative-past, no commit hashes or author names).
+            players (concise, imperative-past, no commit hashes). Do not name
+            authors except via an explicit "(thanks @handle)" credit when the
+            user prompt asks for one.
             Group related commits, drop noise like "merge", "wip", "typo".
             Ignore commits that only touch CI, workflows, build tooling, docs or
             repository setup - they are not player-facing.
@@ -152,6 +138,8 @@ jobs:
             --exclude='commits.txt' \
             --exclude='ai.txt' \
             --exclude='user_prompt.txt' \
+            --exclude='attributed_commits.txt' \
+            --exclude='contributors.txt' \
             ./ "$STAGE/"
           rm -f "$STAGE/Changelog.txt"   # keep only the lowercase changelog.txt
           ( cd build && zip -r -X "../${MOD}_${VER}.zip" "${MOD}_${VER}" >/dev/null )
@@ -171,7 +159,7 @@ jobs:
           VER="${{ steps.version.outputs.version }}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          rm -f commits.txt ai.txt user_prompt.txt
+          rm -f commits.txt ai.txt user_prompt.txt attributed_commits.txt contributors.txt
           git add info.json changelog.txt
           git diff --cached --quiet || git commit -m "Release ${VER}"
           # Idempotent: a retried run (e.g. after a failed portal upload) must

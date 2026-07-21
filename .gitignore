@@ -47,3 +47,12 @@ luac.out
 # Python bytecode from .github/scripts
 __pycache__/
 *.pyc
+
+# release workflow scratch files
+commits.txt
+contributors.txt
+attributed_commits.txt
+user_prompt.txt
+ai.txt
+build/
+*.zip
