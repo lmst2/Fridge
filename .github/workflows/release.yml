@@ -82,8 +82,10 @@ jobs:
             authors except via an explicit "(thanks @handle)" credit when the
             user prompt asks for one.
             Group related commits, drop noise like "merge", "wip", "typo".
-            Ignore commits that only touch CI, workflows, build tooling, docs or
-            repository setup - they are not player-facing.
+            Ignore commits that only touch CI, workflows, build tooling, docs,
+            repository setup, or the changelog and version files themselves -
+            none of that is player-facing. Never thank anyone unless the user
+            prompt explicitly lists them as a contributor.
             Example:
               Features:
               - Added a freezing unloading bay for space platforms
