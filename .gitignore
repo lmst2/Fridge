@@ -43,3 +43,7 @@ luac.out
 *.x86_64
 *.hex
 
+
+# Python bytecode from .github/scripts
+__pycache__/
+*.pyc
