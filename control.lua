@@ -428,17 +428,15 @@ local function init_entities()
         end
         
         -- Find and register preservation inserters
-        local inserters = script.active_mods["space-age"] and {
+        local inserter_names = {
           "preservation-fast-inserter",
           "preservation-long-inserter",
-          "preservation-stack-inserter",
           "preservation-bulk-inserter"
-        } or {
-          "preservation-fast-inserter",
-          "preservation-long-inserter",
-          "preservation-stack-inserter"
         }
-        local inserters = surface.find_entities_filtered{ name = inserters }
+        if script.active_mods["space-age"] then
+          table.insert(inserter_names, "preservation-stack-inserter")
+        end
+        local inserters = surface.find_entities_filtered{ name = inserter_names }
         for _, inserter in pairs(inserters) do
             storage.PreservationInserters[inserter.unit_number] = inserter
         end
@@ -510,13 +508,13 @@ local function init_events()
         { filter = "name", name = "preservation-wagon" },
         { filter = "name", name = "preservation-fast-inserter" },
         { filter = "name", name = "preservation-long-inserter" },
-        { filter = "name", name = "preservation-stack-inserter" }
+        { filter = "name", name = "preservation-bulk-inserter" }
     }
 
     if script.active_mods["space-age"] then
       table.insert(entity_filter, { filter = "name", name = "preservation-platform-warehouse" })
       table.insert(entity_filter, { filter = "name", name = "preservation-platform-unloading-bay" })
-      table.insert(entity_filter, { filter = "name", name = "preservation-bulk-inserter" })
+      table.insert(entity_filter, { filter = "name", name = "preservation-stack-inserter" })
     end
     
     -- Register entity creation events

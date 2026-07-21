@@ -713,6 +713,17 @@ local ingredPW = mods["space-age"] and {
   {"space-science-pack", 1},
 }
 
+-- The stack preservation inserter only exists when Space Age provides the
+-- stack-inserter it is based on
+local inserter_unlocks = {
+  {type = "unlock-recipe", recipe = "preservation-fast-inserter"},
+  {type = "unlock-recipe", recipe = "preservation-long-inserter"},
+  {type = "unlock-recipe", recipe = "preservation-bulk-inserter"}
+}
+if mods["space-age"] then
+  table.insert(inserter_unlocks, {type = "unlock-recipe", recipe = "preservation-stack-inserter"})
+end
+
 local technologies = {
   -- Basic refrigerator
   {
@@ -817,12 +828,7 @@ local technologies = {
           },
           time = 30
       },
-      effects = {
-          {type = "unlock-recipe", recipe = "preservation-fast-inserter"},
-          {type = "unlock-recipe", recipe = "preservation-long-inserter"},
-          {type = "unlock-recipe", recipe = "preservation-bulk-inserter"},
-          {type = "unlock-recipe", recipe = "preservation-stack-inserter"}
-      },
+      effects = inserter_unlocks,
       order = "a-d-a"
   }
 }
