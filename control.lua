@@ -290,6 +290,13 @@ local function OnEntityCreated(event)
         -- Add warehouse to surface storage
         table.insert(storage.PlatformWarehouses[surface_name], entity)
         
+    elseif entity.name == "preservation-platform-unloading-bay" then
+        -- Initialize surface storage if needed
+        local surface_name = entity.surface.name
+        storage.PlatformWarehouses[surface_name] = storage.PlatformWarehouses[surface_name] or {}
+        
+        -- Add warehouse to surface storage
+        table.insert(storage.PlatformWarehouses[surface_name], entity)
     elseif entity.name:find("refrigerater") then
         -- Register basic or logistic refrigerator
         storage.Fridges[entity.unit_number] = entity
@@ -337,6 +344,17 @@ local function OnEntityRemoved(event)
         storage.Warehouses = filtered_warehouses
         
     elseif entity.name == "preservation-platform-warehouse" then
+        -- Remove from surface-specific storage
+        local surface_name = entity.surface.name
+        if storage.PlatformWarehouses[surface_name] then
+            for i, warehouse in ipairs(storage.PlatformWarehouses[surface_name]) do
+                if warehouse == entity then
+                    table.remove(storage.PlatformWarehouses[surface_name], i)
+                    break
+                end
+            end
+        end
+    elseif entity.name == "preservation-platform-unloading-bay" then
         -- Remove from surface-specific storage
         local surface_name = entity.surface.name
         if storage.PlatformWarehouses[surface_name] then
@@ -411,12 +429,12 @@ local function init_entities()
         
         -- Find and register preservation inserters
         local inserters = script.active_mods["space-age"] and {
-          "preservation-inserter",
+          "preservation-fast-inserter",
           "preservation-long-inserter",
           "preservation-stack-inserter",
           "preservation-bulk-inserter"
         } or {
-          "preservation-inserter",
+          "preservation-fast-inserter",
           "preservation-long-inserter",
           "preservation-stack-inserter"
         }
@@ -454,6 +472,13 @@ local function init_entities()
           if #platform_warehouses > 0 then
               storage.PlatformWarehouses[surface.name] = platform_warehouses
           end
+                    -- Find and register platform warehouses
+          local unloading_bay = surface.find_entities_filtered{
+              name = "preservation-platform-unloading-bay"
+          }
+          if #unloading_bay > 0 then
+              storage.PlatformWarehouses[surface.name] = unloading_bay
+          end
         end
         
         -- Find and register preservation wagons
@@ -483,13 +508,14 @@ local function init_events()
         { filter = "name", name = "logistic-refrigerater-buffer" },
         { filter = "name", name = "preservation-warehouse" },
         { filter = "name", name = "preservation-wagon" },
-        { filter = "name", name = "preservation-inserter" },
+        { filter = "name", name = "preservation-fast-inserter" },
         { filter = "name", name = "preservation-long-inserter" },
         { filter = "name", name = "preservation-stack-inserter" }
     }
 
     if script.active_mods["space-age"] then
       table.insert(entity_filter, { filter = "name", name = "preservation-platform-warehouse" })
+      table.insert(entity_filter, { filter = "name", name = "preservation-platform-unloading-bay" })
       table.insert(entity_filter, { filter = "name", name = "preservation-bulk-inserter" })
     end
     

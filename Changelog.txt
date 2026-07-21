@@ -1,4 +1,17 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.2.2
+  Categories:
+    - Features, Bug Fixes, Modifications
+  Date: 2025-1-13:
+  Changes:
+    - Features
+      - Added Freezing Unloading Bay 
+    - Bug Fixes:
+      - Changed the Name of Bulk/Stack inserter
+    - Modifications:
+      - Changed preservation-inserter to preservation-fast-inserter
+      - Changed the group/subgroup of items to better respresent their category
+---------------------------------------------------------------------------------------------------
 Version: 0.2.1
   Categories:
     - Bug Fixes, Modifications
