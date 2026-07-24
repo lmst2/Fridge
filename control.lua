@@ -29,10 +29,10 @@ local floor = math.floor
 -- workload between them (see global_period); because recovery is elapsed-based
 -- it is purely a granularity/UPS knob and can move freely between ticks.
 local PERIOD_MIN = 20    -- fastest refresh, for small bases
-local PERIOD_MAX = 300   -- slowest refresh: 5 seconds of game time
+local PERIOD_MAX = 300   -- slowest refresh, from settings: 5 s of game time
 
 -- Slots per tick the mod aims to spend once past the trivial range. At roughly
--- 4.5 us per slot this is about 0.9 ms of a 16.67 ms tick.
+-- 4.5 us per slot the default 200 is about 0.9 ms of a 16.67 ms tick.
 local SLOT_BUDGET = 200
 
 -- Half-width of the Bezier fillet, as a fraction of the workload at which the
@@ -57,6 +57,14 @@ local FRESHNESS_MARGIN = 3
 
 local freeze_rates = settings.global["fridge-freeze-rate"].value
 local platform_capacity = settings.startup["fridge-space-plantform-capacity"].value
+
+-- Skip re-walking a container whose item count has not moved. Off by default;
+-- the setting description spells out the trade. See `process`.
+local skip_unchanged = settings.startup["fridge-large-factory-optimization"].value
+
+-- While skipping, a container's freshness display drifts. Bound that drift to
+-- 1/SKIP_DRIFT of the life its contents had left when they were last read.
+local SKIP_DRIFT = 20
 
 ---- Tracked entities ----
 
@@ -195,10 +203,38 @@ local function walk(inv, recover, tick, track, cap)
     local horizon = tick + PERIOD_MAX + SAFETY
     local deadline, hot, hot_n = nil, nil, 0
 
+    -- The body of preserve_stack, inlined. A Lua call per slot measured at 39%
+    -- of this loop's total cost - the walk is the one place in the mod where
+    -- that is worth eighteen duplicated lines. The quality-aware path is rare
+    -- enough to stay a call.
+    local cache, by_quality = spoil_ticks, quality_changes_spoil
+    local ceiling = tick - FRESHNESS_MARGIN
+
     for i = 1, slots do
         local stack = inv[i]
         if stack.valid_for_read then
-            local spoils_at = preserve_stack(stack, recover, tick)
+            local spoils_at
+            if by_quality then
+                spoils_at = preserve_stack(stack, recover, tick)
+            else
+                spoils_at = stack.spoil_tick
+                if spoils_at > 0 then
+                    local name = stack.name
+                    local base = cache[name]
+                    if not base then
+                        base = stack.prototype.get_spoil_ticks()
+                        cache[name] = base
+                    end
+                    local limit = ceiling + base
+                    if spoils_at < limit then
+                        local extended = spoils_at + recover
+                        spoils_at = extended < limit and extended or limit
+                        stack.spoil_tick = spoils_at
+                    end
+                else
+                    spoils_at = nil
+                end
+            end
             if spoils_at then
                 if track then
                     if not deadline or spoils_at < deadline then
@@ -532,9 +568,35 @@ local function process(entry, tick)
         -- the full-walk figure: it is what a visit *might* cost, and shrinking
         -- it would let a base-wide power cut collapse the whole budget.
         entry.last = tick
-        entry.deadline, entry.hot = nil, nil
+        entry.deadline, entry.hot, entry.count = nil, nil, nil
         schedule(entry, tick)
         return 1
+    end
+
+    -- Large factory optimisation. Asking the game how many items a container
+    -- holds is one question; reading five hundred slots is five hundred. If
+    -- the answer has not moved, the previous reading still stands and the walk
+    -- can wait. `last` is left alone, so whichever visit does walk recovers
+    -- the whole skipped interval at once and nothing is lost.
+    --
+    -- What is lost meanwhile is display: an untouched spoil_tick means the
+    -- freshness bar really does drain until the next walk snaps it back. So
+    -- skipping is bounded by that drift rather than by time - at most
+    -- 1/SKIP_DRIFT of what the contents had left when they were last read.
+    -- Long-lived goods coast for thousands of ticks; something with a minute
+    -- to live is barely deferred at all, and anything near spoiling is not
+    -- deferred, which is what keeps the freezer's promise intact.
+    --
+    -- The remaining hole is an equal-count swap: one item out and one in
+    -- between two walks reads as unchanged, so a nearly-spoiled newcomer goes
+    -- unnoticed until the next one. Off by default, spelled out in the setting.
+    if skip_unchanged and entry.count and entry.deadline then
+        local drift = tick - entry.last
+        if drift * SKIP_DRIFT < entry.deadline - entry.last
+            and inv.get_item_count() == entry.count then
+            schedule(entry, tick)
+            return 1
+        end
     end
 
     local elapsed = tick - entry.last
@@ -567,6 +629,7 @@ local function process(entry, tick)
         set_work(entry, scanned)
         entry.deadline, entry.hot = deadline, hot
         cost = scanned
+        if skip_unchanged then entry.count = inv.get_item_count() end
     end
 
     schedule(entry, tick)
@@ -608,9 +671,22 @@ local function on_tick(event)
     local tick = event.tick
     local dues = storage.heap_due
 
-    while credit > 0 and dues[1] and dues[1] <= tick do
-        local key = heap_pop()
-        local entry = entry_for(key)
+    -- The schedule is the requirement; the budget only decides how smoothly it
+    -- is met. So when the credit runs out one entry is still processed, and
+    -- pays for it out of the following ticks. Stopping dead instead let a
+    -- fully-loaded base under a speed mod spend nearly every tick repaying a
+    -- single 500-slot walk, and anything close to spoiling starved behind the
+    -- bulk work until it rotted. A tick still costs at most the credit it had
+    -- plus one entry, which is the bound either way.
+    local forced = false
+
+    while dues[1] and dues[1] <= tick do
+        if credit <= 0 then
+            if forced then break end
+            forced = true
+        end
+
+        local entry = entry_for(heap_pop())
         -- Anything rescheduled since it was pushed left a stale pair behind.
         if entry and entry.due <= tick then
             if entry.kind == "inserter" then
@@ -726,7 +802,9 @@ local function OnPlayerMovedItems(event)
     local entry = entry_for(entity.unit_number)
     if not (entry and entry.full_freeze) then return end
 
-    entry.hot = nil  -- force a full walk, so a stack in any slot is found
+    -- Force a full walk, so a stack dropped into any slot is found, and drop
+    -- the item count so the large-factory skip cannot short-circuit it.
+    entry.hot, entry.count = nil, nil
     expedite(entry, event.tick)
 end
 
@@ -734,6 +812,9 @@ end
 
 local function init_settings()
     freeze_rates = settings.global["fridge-freeze-rate"].value
+    SLOT_BUDGET = settings.global["fridge-slot-budget"].value
+    PERIOD_MAX = settings.global["fridge-max-refresh-gap"].value
+    if PERIOD_MAX < PERIOD_MIN then PERIOD_MAX = PERIOD_MIN end
 end
 
 --- Rebuild the queue from scratch by scanning every surface.
@@ -755,6 +836,7 @@ local function init_entities()
 end
 
 local function init_events()
+    init_settings()
     init_cache()
 
     local filter = {}
