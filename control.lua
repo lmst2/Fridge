@@ -527,7 +527,11 @@ local function preserve_entry(entry, tick, hot_only)
             -- power must not retroactively freeze everything when it returns.
             entry.last = tick
             entry.acc = 0
-            set_work(entry, 1)
+            -- `work` deliberately left at the full-walk figure. It is the
+            -- scheduler's estimate of what a visit *might* cost, not what this
+            -- one did, and collapsing it to 1 made a base-wide power cut shrink
+            -- total_work to nothing - so when power returned every warehouse
+            -- was charged 1 and walked 500, all on one tick.
             -- Its contents spoil normally now, so drop it out of the fast lane
             -- rather than letting a stale deadline keep waking it.
             set_deadline(entry, nil, tick)
@@ -706,11 +710,22 @@ local function on_tick(event)
         local entry = queue[cursor]
         if not entry then break end
 
-        if entry.work > credit then break end
-        credit = credit - entry.work
+        local estimate = entry.work
+        if estimate > credit then break end
+        credit = credit - estimate
 
         -- A removed entry pulls the last one into this slot, so hold position.
         if not preserve_entry(entry, tick) then
+            -- The estimate comes from the previous visit and can undershoot
+            -- badly: an unpowered warehouse is recorded as a single slot, and
+            -- the pass after power returns walks five hundred. Charging only
+            -- the estimate let a base-wide power cut collapse total_work, and
+            -- restoring power then walked every warehouse on one tick. Bill the
+            -- difference so a surprise ends the tick instead of landing on it.
+            local actual = entry.work
+            if actual > estimate then
+                credit = credit - (actual - estimate)
+            end
             cursor = cursor + 1
         end
         visited = visited + 1
