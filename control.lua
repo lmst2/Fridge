@@ -2,6 +2,12 @@
 -- Implements preservation mechanics for refrigerators, warehouses, and related entities
 -- that extend item spoilage time through various cooling mechanisms.
 --
+-- Preservation used to run as a periodic sweep: every N ticks, walk every stack
+-- in every tracked container and rewrite its spoil_tick. That put the entire
+-- factory's cost on a single tick, which is what players saw as a recurring
+-- freeze. It is now a continuously drained work queue instead - see the
+-- "Preservation work queue" and "Scheduler" sections.
+--
 -- @module control
 -- @author LightningMaster
 -- @license MIT
@@ -9,533 +15,665 @@
 
 ---- Configuration ----
 
+-- Ticks for one complete pass over everything tracked. Because recovery is
+-- derived from the time that actually elapsed since an entry was last visited
+-- (see recovery_for), this is purely a granularity/UPS knob: changing it does
+-- not change how fast items spoil, only how often their remaining time is
+-- refreshed. 80 is the interval the warehouse sweep already used.
+local UPDATE_PERIOD = 80
+
+-- A preservation warehouse only cools while its power proxy holds this much.
+local WAREHOUSE_ENERGY_THRESHOLD = 1200000
+
+-- Items are never pushed closer than this to brand new.
+local FRESHNESS_MARGIN = 3
+
 -- Load mod settings
 local freeze_rates = settings.global["fridge-freeze-rate"].value
+local platform_capacity = settings.startup["fridge-space-plantform-capacity"].value
 
----- Helper Functions ----
+--- Entities this mod tracks, grouped by how they preserve.
+-- These lists are the single source of truth: the surface scan, the event
+-- filter and the build/remove handlers all derive from them, so a name can no
+-- longer be handled by one and missed by another.
+local FRIDGE_NAMES = {
+    "refrigerater",
+    "logistic-refrigerater-passive-provider",
+    "logistic-refrigerater-requester",
+    "logistic-refrigerater-buffer"
+}
+local INSERTER_NAMES = {
+    "preservation-fast-inserter",
+    "preservation-long-inserter",
+    "preservation-bulk-inserter",
+    "preservation-stack-inserter"
+}
+local PLATFORM_NAMES = {
+    "preservation-platform-warehouse",
+    "preservation-platform-unloading-bay"
+}
+local WAREHOUSE_NAME = "preservation-warehouse"
+local WAGON_NAME = "preservation-wagon"
 
---- Removes an item from a table or dictionary while preserving structure
--- @function remove_item
--- @param tbl The input table or dictionary to modify
--- @param item The key or value to remove
--- @return table A new table with the specified item removed
-local function remove_item(tbl, item)
-    local new_tbl = {}
-    if type(tbl) == "table" then
-        -- If input is array-like table
-        if #tbl > 0 then
-            for _, v in ipairs(tbl) do
-                if v ~= item then
-                    table.insert(new_tbl, v)
-                end
+--- Turn a name list into a lookup set.
+local function name_set(names)
+    local set = {}
+    for _, name in pairs(names) do
+        set[name] = true
+    end
+    return set
+end
+
+local IS_FRIDGE = name_set(FRIDGE_NAMES)
+local IS_INSERTER = name_set(INSERTER_NAMES)
+local IS_PLATFORM = name_set(PLATFORM_NAMES)
+
+--- Keep only the names that exist in this game.
+-- The stack inserter needs Space Age, and the unloading bay additionally needs
+-- Factorio 2.1, where Space Age ships the cargo bay it is built from. Filtering
+-- on the prototype covers both without version guards at every use site.
+local function existing_names(names)
+    local present = {}
+    for _, name in pairs(names) do
+        if prototypes.entity[name] then
+            present[#present + 1] = name
+        end
+    end
+    return present
+end
+
+---- Prototype caches ----
+
+-- Rebuilt on every load and deliberately kept out of `storage`: prototype data
+-- cannot change without a reload. Re-reading `stack.prototype` and calling
+-- get_spoil_ticks() for every stack on every pass was the single largest cost
+-- in the old sweep.
+local spoil_ticks = {}
+local quality_changes_spoil = false
+
+local function init_caches()
+    spoil_ticks = {}
+    -- Vanilla qualities all leave spoil time alone, so the cache can be keyed
+    -- by item name only and the stack's quality never has to be read. Any mod
+    -- that does change it forces the slower, fully correct path.
+    local ok, changed = pcall(function()
+        for _, quality in pairs(prototypes.quality) do
+            if quality.spoil_ticks_multiplier ~= 1 then
+                return true
             end
-        -- If input is dictionary-like table
-        else
-            for k, v in pairs(tbl) do
-                if k ~= item then
-                    new_tbl[k] = v
-                end
+        end
+        return false
+    end)
+    quality_changes_spoil = (not ok) or changed
+end
+
+---- Preservation ----
+
+--- Push one stack's spoil time back, without letting it become fresher than new.
+-- @param stack LuaItemStack, already known to be valid_for_read
+-- @param recover Ticks of spoilage to undo
+-- @param tick Current tick
+-- @return boolean Whether the stack was spoilable at all
+local function preserve_stack(stack, recover, tick)
+    local current = stack.spoil_tick
+    if current <= 0 then return false end
+
+    local name = stack.name
+    local base
+    if quality_changes_spoil then
+        local by_quality = spoil_ticks[name]
+        if not by_quality then
+            by_quality = {}
+            spoil_ticks[name] = by_quality
+        end
+        local quality = stack.quality.name
+        base = by_quality[quality]
+        if not base then
+            base = stack.prototype.get_spoil_ticks(quality)
+            by_quality[quality] = base
+        end
+    else
+        base = spoil_ticks[name]
+        if not base then
+            base = stack.prototype.get_spoil_ticks()
+            spoil_ticks[name] = base
+        end
+    end
+
+    local limit = tick + base - FRESHNESS_MARGIN
+    if current < limit then
+        local extended = current + recover
+        stack.spoil_tick = extended < limit and extended or limit
+    end
+    return true
+end
+
+--- Preserve every spoilable stack in an inventory.
+-- @param inv LuaInventory
+-- @param recover Ticks of spoilage to undo
+-- @param tick Current tick
+-- @param max_stacks Optional cap on how many stacks are preserved
+-- @return number Slots examined - this entry's workload for the scheduler
+local function preserve_inventory(inv, recover, tick, max_stacks)
+    if inv.is_empty() then return 1 end
+
+    local slots = #inv
+    local scanned = slots
+    local preserved = 0
+    for i = 1, slots do
+        local stack = inv[i]
+        if stack.valid_for_read and preserve_stack(stack, recover, tick) then
+            preserved = preserved + 1
+            if max_stacks and preserved >= max_stacks then
+                scanned = i
+                break
             end
         end
     end
-    return new_tbl
+    return scanned
 end
 
+---- Preservation work queue ----
+--
+-- Everything tracked is one entry in `storage.queue`, and each entry caches
+-- `work`: how many inventory slots its last pass had to walk. The scheduler
+-- spends a fixed share of the *total* workload per tick, so a packed legendary
+-- warehouse and an empty refrigerator no longer cost the same slice, and no
+-- single tick ever pays for the whole factory.
+--
+-- entry = {
+--   key          unit_number, or "surface:<name>" for a platform
+--   kind         "container" | "warehouse" | "inserter" | "platform"
+--   entity       container / inserter / platform hub
+--   proxy        power proxy (warehouse only)
+--   inventory    defines.inventory.* to walk (containers only)
+--   surface      surface name (platform only)
+--   full_freeze  true stops spoilage outright, false slows it by freeze_rates
+--   work         cached slot count, at least 1
+--   last         tick this entry was last processed
+--   acc          leftover fractional aging in ticks, see recovery_for
+-- }
 
---- Initialize or update general storages of the mod
--- @function init_storages
--- @field storage.tick Counter for timing fridge updates
--- @field storage.Fridges Table storing all fridge entities
--- @field storage.Warehouses Table storing all warehouse entities
--- @field storage.PlatformWarehouses Table storing all platform warehouse entities
 local function init_storages()
-  storage.Fridges = storage.Fridges or {}
-  storage.Warehouses = storage.Warehouses or {}
-  storage.PlatformWarehouses = storage.PlatformWarehouses or {}
-  storage.Wagons = storage.Wagons or {}
-  storage.PreservationInserters = storage.PreservationInserters or {}
+    storage.queue = storage.queue or {}
+    storage.index = storage.index or {}
+    storage.cursor = storage.cursor or 1
+    storage.total_work = storage.total_work or 0
+    storage.work_credit = storage.work_credit or 0
+    storage.PlatformWarehouses = storage.PlatformWarehouses or {}
 end
 
---- Check warehouse power and extend spoil time if necessary
--- @function check_warehouse_power
--- @field storage.Warehouses Table storing all warehouse entities
-local function check_warehouse_power()
-  for unit_number,  warehouse_dict in pairs(storage.Warehouses) do
-    local warehouse = warehouse_dict.warehouse
-    local proxy = warehouse_dict.proxy
-    if warehouse and warehouse.valid and proxy and proxy.valid then
-      -- game.print("warehouse energy: " .. serpent.block(proxy.energy))
-      -- game.print("warehouse electric_buffer_size: " .. serpent.block(proxy.electric_buffer_size))
-      
-      if proxy.energy > 1200000 then
-        local inv = warehouse.get_inventory(defines.inventory.chest)
-        for i=1, #inv do
-          local itemStack = inv[i]
-          if itemStack and itemStack.valid_for_read and itemStack.spoil_tick > 0 then
-            itemStack.spoil_tick = math.min(itemStack.spoil_tick + 80, game.tick + itemStack.prototype.get_spoil_ticks(itemStack.quality) - 3)
-          end
+--- Update an entry's cached workload, keeping the running total in step.
+local function set_work(entry, work)
+    if work < 1 then work = 1 end
+    if work ~= entry.work then
+        storage.total_work = storage.total_work + work - entry.work
+        entry.work = work
+    end
+end
+
+local function queue_add(entry)
+    if storage.index[entry.key] then return end
+    if not entry.work or entry.work < 1 then entry.work = 1 end
+    entry.last = game.tick
+    entry.acc = 0
+
+    local queue = storage.queue
+    queue[#queue + 1] = entry
+    storage.index[entry.key] = #queue
+    storage.total_work = storage.total_work + entry.work
+end
+
+--- Remove an entry in constant time by swapping the last one into its place.
+local function queue_remove(key)
+    local position = storage.index[key]
+    if not position then return end
+
+    local queue = storage.queue
+    local last = #queue
+    storage.total_work = storage.total_work - queue[position].work
+    storage.index[key] = nil
+    if position ~= last then
+        queue[position] = queue[last]
+        storage.index[queue[position].key] = position
+    end
+    queue[last] = nil
+end
+
+--- Slots in an entity's tracked inventory, for the initial workload estimate.
+local function inventory_slots(entity, inventory)
+    local inv = entity.get_inventory(inventory)
+    return inv and #inv or 1
+end
+
+---- Scheduler ----
+
+--- Ticks of spoilage to undo, given how long since this entry's last pass.
+-- Deriving recovery from elapsed time rather than a fixed per-sweep constant is
+-- what lets the scheduler visit an entry whenever it has budget: visited after
+-- 60 ticks it gets exactly twice the nudge of one visited after 30, so the
+-- effective spoil rate is identical either way. `acc` carries the remainder
+-- below one full freeze_rates step so nothing is lost to rounding.
+local function recovery_for(entry, elapsed)
+    if entry.full_freeze then return elapsed end
+    local accumulated = entry.acc + elapsed
+    local aged = math.floor(accumulated / freeze_rates)
+    entry.acc = accumulated - aged * freeze_rates
+    return elapsed - aged
+end
+
+--- Preserve a platform's hub inventory, up to the capacity its freezing cargo
+-- bays provide. The hub is cached on the entry; the old code searched the whole
+-- surface for it on every sweep.
+-- @return boolean Whether the entry removed itself
+local function preserve_platform(entry, tick)
+    local surface = game.surfaces[entry.surface]
+    local warehouses = storage.PlatformWarehouses[entry.surface]
+    if not (surface and warehouses) then
+        queue_remove(entry.key)
+        return true
+    end
+
+    -- Surviving bays set the capacity, so drop dead ones as we count.
+    for i = #warehouses, 1, -1 do
+        local warehouse = warehouses[i]
+        if not (warehouse and warehouse.valid) then
+            table.remove(warehouses, i)
         end
-      end
+    end
+    if #warehouses == 0 then
+        storage.PlatformWarehouses[entry.surface] = nil
+        queue_remove(entry.key)
+        return true
+    end
+
+    local hub = entry.entity
+    if not (hub and hub.valid) then
+        hub = surface.find_entities_filtered{ name = "space-platform-hub" }[1]
+        entry.entity = hub
+    end
+
+    local inv = hub and hub.get_inventory(defines.inventory.hub_main)
+    if not inv then
+        entry.last = tick
+        set_work(entry, 1)
+        return false
+    end
+
+    local elapsed = tick - entry.last
+    if elapsed <= 0 then return false end
+    entry.last = tick
+
+    local recover = recovery_for(entry, elapsed)
+    if recover > 0 then
+        set_work(entry, preserve_inventory(inv, recover, tick,
+            #warehouses * platform_capacity))
+    end
+    return false
+end
+
+--- Run one entry's preservation pass.
+-- @return boolean Whether the entry removed itself from the queue
+local function preserve_entry(entry, tick)
+    local kind = entry.kind
+    if kind == "platform" then
+        return preserve_platform(entry, tick)
+    end
+
+    local entity = entry.entity
+    if not (entity and entity.valid) then
+        if entry.proxy and entry.proxy.valid then
+            entry.proxy.destroy()
+        end
+        queue_remove(entry.key)
+        return true
+    end
+
+    if kind == "warehouse" then
+        local proxy = entry.proxy
+        if not (proxy and proxy.valid) then
+            queue_remove(entry.key)
+            return true
+        end
+        if proxy.energy <= WAREHOUSE_ENERGY_THRESHOLD then
+            -- Unpowered: items spoil normally. Skip the walk, and just as
+            -- importantly do not bank the elapsed time - a warehouse that lost
+            -- power must not retroactively freeze everything when it returns.
+            entry.last = tick
+            entry.acc = 0
+            set_work(entry, 1)
+            return false
+        end
+    end
+
+    local elapsed = tick - entry.last
+    if elapsed <= 0 then return false end
+    entry.last = tick
+
+    local recover = recovery_for(entry, elapsed)
+    if recover <= 0 then return false end
+
+    if kind == "inserter" then
+        local held = entity.held_stack
+        if held and held.valid_for_read then
+            preserve_stack(held, recover, tick)
+        end
+        return false
+    end
+
+    local inv = entity.get_inventory(entry.inventory)
+    if inv then
+        set_work(entry, preserve_inventory(inv, recover, tick))
     else
-      proxy.destroy()
-      storage.Warehouses = remove_item(storage.Warehouses, unit_number)
-      -- game.print("warehouse is removed unexpectedly, removing it from watch list, id: "..unit_number)
+        set_work(entry, 1)
     end
-  end
+    return false
 end
 
---- Process refrigerators to extend item spoilage time
--- Checks each refrigerator (both basic and logistic variants) and extends
--- the spoilage time for items inside based on the provided recovery rate.
--- Removes invalid refrigerators from storage.
---
--- @function check_fridges
--- @param recover_number Amount to extend spoilage time by
-local function check_fridges(recover_number)
-    -- Process each refrigerator in storage
-    for unit_number, fridge in pairs(storage.Fridges) do
-        -- Verify refrigerator is still valid
-        if fridge and fridge.valid then
-            -- Get refrigerator inventory
-            local inv = fridge.get_inventory(defines.inventory.chest)
-            
-            -- Process each item in the inventory
-            for i = 1, #inv do
-                local itemStack = inv[i]
-                -- Check if item exists and can spoil
-                if itemStack and itemStack.valid_for_read and itemStack.spoil_tick > 0 then
-                    -- Extend spoilage time while respecting maximum duration
-                    local max_spoil_time = game.tick + itemStack.prototype.get_spoil_ticks(itemStack.quality) - 3
-                    itemStack.spoil_tick = math.min(
-                        itemStack.spoil_tick + recover_number,
-                        max_spoil_time
-                    )
-                end
-            end
-        else
-            -- Remove invalid refrigerator from storage
-            storage.Fridges = remove_item(storage.Fridges, unit_number)
-        end
-    end
-end
-
-
-
---- Process space platform warehouses to extend item spoilage time
--- Only runs if Space Age mod is active. Finds all platform hubs and extends
--- spoilage time for items up to the configured bonus slot capacity.
--- Tracks which slots are being preserved for visual feedback.
---
--- @function check_platform_warehouse
-local function check_platform_warehouse()
-    -- Skip if Space Age mod is not active
-    if not script.active_mods["space-age"] then return end
-    
-    -- Process each surface with platform warehouses
-    for surface_name, warehouses in pairs(storage.PlatformWarehouses) do
-        local surface = game.surfaces[surface_name]
-        if not surface then goto continue end
-        
-        -- Calculate preservation capacity for this surface
-        local bonus_slots = #warehouses * settings.startup["fridge-space-plantform-capacity"].value
-        
-        -- Find and process all platform hubs
-        local platform_hubs = surface.find_entities_filtered{
-            name = "space-platform-hub"
-        }
-        
-        -- Process each hub's inventory
-        for _, hub in pairs(platform_hubs) do
-            local platform_inv = hub.get_inventory(defines.inventory.hub_main)
-            if not platform_inv then goto next_hub end
-            
-            -- Track preserved slots for this hub
-            local items_frozen = 0
-            
-            -- Process inventory slots up to capacity
-            for i = 1, #platform_inv do
-                -- Stop if we've reached preservation limit
-                if items_frozen >= bonus_slots then break end
-                
-                local itemStack = platform_inv[i]
-                if itemStack and itemStack.valid_for_read and itemStack.spoil_tick > 0 then
-                    local max_spoil_time = game.tick + itemStack.prototype.get_spoil_ticks(itemStack.quality) - 3
-                    itemStack.spoil_tick = math.min(
-                        itemStack.spoil_tick + 80,
-                        max_spoil_time
-                    )
-                    items_frozen = items_frozen + 1
-                end
-            end
-            
-            ::next_hub::
-        end
-        
-        ::continue::
-    end
-end
-
-
---- Process preservation wagons to extend item spoilage time
--- Checks each preservation wagon's cargo inventory and extends the spoilage time
--- for items inside based on the provided recovery rate. This allows items to be
--- preserved while being transported by rail.
---
--- @function check_wagons
--- @param recover_number Amount to extend spoilage time by
-local function check_wagons(recover_number)
-  -- Process each wagon's inventory
-  for _, wagon in pairs(storage.Wagons) do
-    local wagon_inv = wagon.get_inventory(defines.inventory.cargo_wagon)
-    if wagon_inv then
-      for i = 1, #wagon_inv do
-        local itemStack = wagon_inv[i]
-        if itemStack and itemStack.valid_for_read and itemStack.spoil_tick > 0 then
-          -- Extend spoil time by freeze rate
-          itemStack.spoil_tick = math.min(
-            itemStack.spoil_tick + recover_number,
-            game.tick + itemStack.prototype.get_spoil_ticks(itemStack.quality) - 3
-          )
-        end
-      end
-    end
-  end
-end
-
-
---- Check preservation inserters and extend spoil time for held items
--- @function check_preservation_inserters
-local function check_preservation_inserters(recover_number)
-  for unit_number, inserter in pairs(storage.PreservationInserters) do
-    if inserter and inserter.valid then
-      local held_stack = inserter.held_stack
-      if held_stack and held_stack.valid_for_read and held_stack.spoil_tick > 0 then
-        held_stack.spoil_tick = math.min(
-          held_stack.spoil_tick + recover_number,
-          game.tick + held_stack.prototype.get_spoil_ticks(held_stack.quality) - 3
-        )
-      end
-    else
-      storage.PreservationInserters = remove_item(storage.PreservationInserters, unit_number)
-    end
-  end
-end
-
-
---- Main tick handler that extends spoil time for items in fridges
--- @function on_tick
+--- Main tick handler: drain a slice of the preservation queue.
+-- Credit is carried in "slot-ticks": every tick adds the whole workload, and
+-- visiting an entry costs its workload times UPDATE_PERIOD. Over UPDATE_PERIOD
+-- ticks that is exactly enough to visit everything once, and because the cost
+-- is the entry's own slot count the slice is balanced by real work rather than
+-- by container count.
 -- @param event Event data from Factorio runtime
--- @field event.tick Current game tick
--- @field storage.tick Counter for timing fridge updates
 local function on_tick(event)
-  
-  
-  if freeze_rates == 1 then return end
+    if freeze_rates == 1 then return end
 
-  if freeze_rates < 10 then -- avoiding hurt too much of ups
-    if game.tick%(10 * freeze_rates) == 0 then
-      check_fridges((freeze_rates - 1) * 10)
-      check_wagons((freeze_rates - 1) * 10)
-      check_preservation_inserters((freeze_rates - 1) * 10)
+    local queue = storage.queue
+    local count = #queue
+    if count == 0 then return end
+
+    local total = storage.total_work
+    if total <= 0 then return end
+
+    local credit = storage.work_credit + total
+    local ceiling = total * UPDATE_PERIOD
+    if credit > ceiling then credit = ceiling end
+
+    local tick = event.tick
+    local cursor = storage.cursor
+    local visited = 0
+
+    while visited < count do
+        if cursor > #queue then cursor = 1 end
+        local entry = queue[cursor]
+        if not entry then break end
+
+        local cost = entry.work * UPDATE_PERIOD
+        if cost > credit then break end
+        credit = credit - cost
+
+        -- A removed entry pulls the last one into this slot, so hold position.
+        if not preserve_entry(entry, tick) then
+            cursor = cursor + 1
+        end
+        visited = visited + 1
     end
-	elseif game.tick%freeze_rates == 0 then
-    check_fridges(freeze_rates - 1)
-    check_wagons(freeze_rates - 1)
-    check_preservation_inserters(freeze_rates - 1)
-  end
 
-  if game.tick%80 == 0 then
-    check_warehouse_power()
-    check_platform_warehouse()
-  end
+    storage.cursor = cursor
+    storage.work_credit = credit
 end
 
 ---- Runtime Events ----
 
+--- Start tracking a platform surface, if it is not tracked already.
+local function register_platform(surface_name)
+    if storage.index["surface:" .. surface_name] then return end
+    queue_add{
+        key = "surface:" .. surface_name,
+        kind = "platform",
+        surface = surface_name,
+        full_freeze = true,
+        work = platform_capacity
+    }
+end
+
 --- Handle creation of preservation entities
--- Registers newly created entities in the appropriate storage tables
--- and performs any necessary setup (like creating power proxies for warehouses).
+-- Registers newly created entities in the work queue and performs any necessary
+-- setup (like creating power proxies for warehouses).
 --
 -- @function OnEntityCreated
 -- @param event Event data containing the created entity
--- @field event.created_entity Entity created by player
--- @field event.entity Entity created by script
 local function OnEntityCreated(event)
-    -- Get entity from either player or script creation
-    local entity = event.created_entity or event.entity
+    -- on_entity_cloned reports the new entity as `destination`; without it a
+    -- cloned freezer was never tracked.
+    local entity = event.created_entity or event.entity or event.destination
     if not (entity and entity.valid) then return end
-    
-    -- Handle entity based on type
-    if entity.name == "preservation-warehouse" then
+    local name = entity.name
+
+    if name == WAREHOUSE_NAME then
         -- Create power proxy for warehouse
         local proxy = entity.surface.create_entity{
             name = "warehouse-power-proxy",
             position = entity.position,
             force = entity.force
         }
-        
-        -- Register warehouse with its power proxy
         if proxy then
-            storage.Warehouses[entity.unit_number] = {
-                warehouse = entity,
-                proxy = proxy
+            queue_add{
+                key = entity.unit_number,
+                kind = "warehouse",
+                entity = entity,
+                proxy = proxy,
+                inventory = defines.inventory.chest,
+                full_freeze = true,
+                work = inventory_slots(entity, defines.inventory.chest)
             }
         end
-        
-    elseif entity.name == "preservation-platform-warehouse" then
-        -- Initialize surface storage if needed
+
+    elseif IS_PLATFORM[name] then
         local surface_name = entity.surface.name
-        storage.PlatformWarehouses[surface_name] = storage.PlatformWarehouses[surface_name] or {}
-        
-        -- Add warehouse to surface storage
-        table.insert(storage.PlatformWarehouses[surface_name], entity)
-        
-    elseif entity.name == "preservation-platform-unloading-bay" then
-        -- Initialize surface storage if needed
-        local surface_name = entity.surface.name
-        storage.PlatformWarehouses[surface_name] = storage.PlatformWarehouses[surface_name] or {}
-        
-        -- Add warehouse to surface storage
-        table.insert(storage.PlatformWarehouses[surface_name], entity)
-    elseif entity.name:find("refrigerater") then
-        -- Register basic or logistic refrigerator
-        storage.Fridges[entity.unit_number] = entity
-        
-    elseif entity.name == "preservation-wagon" then
-        -- Register preservation wagon
-        storage.Wagons[entity.unit_number] = entity
-        
-    elseif entity.name:find("preservation%-inserter") then
-        -- Register preservation inserter
-        storage.PreservationInserters[entity.unit_number] = entity
+        local warehouses = storage.PlatformWarehouses[surface_name]
+        if not warehouses then
+            warehouses = {}
+            storage.PlatformWarehouses[surface_name] = warehouses
+        end
+        warehouses[#warehouses + 1] = entity
+        register_platform(surface_name)
+
+    elseif IS_FRIDGE[name] then
+        queue_add{
+            key = entity.unit_number,
+            kind = "container",
+            entity = entity,
+            inventory = defines.inventory.chest,
+            full_freeze = false,
+            work = inventory_slots(entity, defines.inventory.chest)
+        }
+
+    elseif name == WAGON_NAME then
+        queue_add{
+            key = entity.unit_number,
+            kind = "container",
+            entity = entity,
+            inventory = defines.inventory.cargo_wagon,
+            full_freeze = false,
+            work = inventory_slots(entity, defines.inventory.cargo_wagon)
+        }
+
+    elseif IS_INSERTER[name] then
+        queue_add{
+            key = entity.unit_number,
+            kind = "inserter",
+            entity = entity,
+            full_freeze = false,
+            work = 1
+        }
     end
 end
 
 --- Handle removal of preservation entities
--- Cleans up entity references from storage tables and performs any necessary
--- cleanup operations (like destroying power proxies for warehouses).
+-- Drops the entity from the work queue and performs any necessary cleanup
+-- (like destroying power proxies for warehouses).
 --
 -- @function OnEntityRemoved
 -- @param event Event data containing the removed entity
--- @field event.entity Entity being removed
 local function OnEntityRemoved(event)
-    -- Verify entity is valid
     local entity = event.entity
     if not (entity and entity.valid) then return end
-    
-    -- Handle entity based on type
-    if entity.name == "preservation-warehouse" then
-        -- Clean up warehouse and its power proxy
-        local filtered_warehouses = {}
-        for unit_number, warehouse_dict in pairs(storage.Warehouses) do
-            local warehouse = warehouse_dict.warehouse
-            local proxy = warehouse_dict.proxy
-            
-            if warehouse == entity then
-                -- Destroy associated power proxy
-                if proxy and proxy.valid then
-                    proxy.destroy()
-                end
-            else
-                -- Keep other warehouses
-                filtered_warehouses[unit_number] = warehouse_dict
-            end
-        end
-        storage.Warehouses = filtered_warehouses
-        
-    elseif entity.name == "preservation-platform-warehouse" then
-        -- Remove from surface-specific storage
+    local name = entity.name
+
+    if IS_PLATFORM[name] then
         local surface_name = entity.surface.name
-        if storage.PlatformWarehouses[surface_name] then
-            for i, warehouse in ipairs(storage.PlatformWarehouses[surface_name]) do
-                if warehouse == entity then
-                    table.remove(storage.PlatformWarehouses[surface_name], i)
+        local warehouses = storage.PlatformWarehouses[surface_name]
+        if warehouses then
+            for i = #warehouses, 1, -1 do
+                if warehouses[i] == entity then
+                    table.remove(warehouses, i)
                     break
                 end
             end
-        end
-    elseif entity.name == "preservation-platform-unloading-bay" then
-        -- Remove from surface-specific storage
-        local surface_name = entity.surface.name
-        if storage.PlatformWarehouses[surface_name] then
-            for i, warehouse in ipairs(storage.PlatformWarehouses[surface_name]) do
-                if warehouse == entity then
-                    table.remove(storage.PlatformWarehouses[surface_name], i)
-                    break
-                end
+            if #warehouses == 0 then
+                storage.PlatformWarehouses[surface_name] = nil
+                queue_remove("surface:" .. surface_name)
             end
         end
-        
-    elseif entity.name:find("refrigerater") then
-        -- Remove refrigerator from storage
-        storage.Fridges = remove_item(storage.Fridges, entity.unit_number)
-        
-    elseif entity.name == "preservation-wagon" then
-        -- Remove wagon from storage
-        storage.Wagons = remove_item(storage.Wagons, entity.unit_number)
-        
-    elseif entity.name:find("inserter") then
-        -- Remove inserter from storage
-        storage.PreservationInserters = remove_item(storage.PreservationInserters, entity.unit_number)
+        return
     end
+
+    if name == WAREHOUSE_NAME then
+        local position = storage.index[entity.unit_number]
+        local entry = position and storage.queue[position]
+        if entry and entry.proxy and entry.proxy.valid then
+            entry.proxy.destroy()
+        end
+    end
+    queue_remove(entity.unit_number)
 end
 
 ---- Initialization Functions ----
 
 --- Initialize or update mod settings
--- Updates global variables with current mod settings
---
 -- @function init_settings
 local function init_settings()
     freeze_rates = settings.global["fridge-freeze-rate"].value
 end
 
 --- Find and register all preservation entities across all surfaces
--- Scans all game surfaces for preservation entities (refrigerators, warehouses,
--- wagons, etc.) and registers them in the appropriate storage tables. Also
--- handles cleanup of old power proxies and initialization of new ones.
+-- Rebuilds the work queue from scratch by scanning every surface. Also cleans
+-- up old power proxies and creates fresh ones.
 --
 -- @function init_entities
 local function init_entities()
-    -- Reset all storage tables
-    storage.Fridges = {}
-    storage.Warehouses = {}
+    storage.queue = {}
+    storage.index = {}
+    storage.cursor = 1
+    storage.total_work = 0
+    storage.work_credit = 0
     storage.PlatformWarehouses = {}
-    storage.Wagons = {}
-    storage.PreservationInserters = {}
 
-    -- Process each game surface
+    local fridge_names = existing_names(FRIDGE_NAMES)
+    local inserter_names = existing_names(INSERTER_NAMES)
+    local platform_names = existing_names(PLATFORM_NAMES)
+
     for _, surface in pairs(game.surfaces) do
         -- Clean up old power proxies first
-        local old_proxies = surface.find_entities_filtered{
-            name = "warehouse-power-proxy"
-        }
-        for _, proxy in pairs(old_proxies) do
+        for _, proxy in pairs(surface.find_entities_filtered{ name = "warehouse-power-proxy" }) do
             proxy.destroy()
         end
-        
-        -- Find and register basic and logistic refrigerators
-        local refrigerators = surface.find_entities_filtered{
-            name = {
-                "refrigerater",
-                "logistic-refrigerater-passive-provider",
-                "logistic-refrigerater-requester",
-                "logistic-refrigerater-buffer"
-            }
-        }
-        for _, fridge in pairs(refrigerators) do
-            storage.Fridges[fridge.unit_number] = fridge
+
+        -- An empty name list would make find_entities_filtered match everything,
+        -- so every scan below is guarded on having something to look for.
+        if #fridge_names > 0 then
+            for _, fridge in pairs(surface.find_entities_filtered{ name = fridge_names }) do
+                queue_add{
+                    key = fridge.unit_number,
+                    kind = "container",
+                    entity = fridge,
+                    inventory = defines.inventory.chest,
+                    full_freeze = false,
+                    work = inventory_slots(fridge, defines.inventory.chest)
+                }
+            end
         end
-        
-        -- Find and register preservation inserters
-        local inserter_names = {
-          "preservation-fast-inserter",
-          "preservation-long-inserter",
-          "preservation-bulk-inserter"
-        }
-        if script.active_mods["space-age"] then
-          table.insert(inserter_names, "preservation-stack-inserter")
+
+        if #inserter_names > 0 then
+            for _, inserter in pairs(surface.find_entities_filtered{ name = inserter_names }) do
+                queue_add{
+                    key = inserter.unit_number,
+                    kind = "inserter",
+                    entity = inserter,
+                    full_freeze = false,
+                    work = 1
+                }
+            end
         end
-        local inserters = surface.find_entities_filtered{ name = inserter_names }
-        for _, inserter in pairs(inserters) do
-            storage.PreservationInserters[inserter.unit_number] = inserter
-        end
-        
-        -- Find and register warehouses with power proxies
-        local warehouses = surface.find_entities_filtered{
-            name = "preservation-warehouse"
-        }
-        for _, warehouse in pairs(warehouses) do
-            -- Create new power proxy for warehouse
+
+        for _, warehouse in pairs(surface.find_entities_filtered{ name = WAREHOUSE_NAME }) do
             local proxy = surface.create_entity{
                 name = "warehouse-power-proxy",
                 position = warehouse.position,
                 force = warehouse.force
             }
-            
-            -- Register warehouse with its proxy
             if proxy then
-                storage.Warehouses[warehouse.unit_number] = {
-                    warehouse = warehouse,
-                    proxy = proxy
+                queue_add{
+                    key = warehouse.unit_number,
+                    kind = "warehouse",
+                    entity = warehouse,
+                    proxy = proxy,
+                    inventory = defines.inventory.chest,
+                    full_freeze = true,
+                    work = inventory_slots(warehouse, defines.inventory.chest)
                 }
             end
         end
-        
-        if script.active_mods["space-age"] then
-          -- Find and register platform warehouses
-          local platform_warehouses = surface.find_entities_filtered{
-              name = "preservation-platform-warehouse"
-          }
-          if #platform_warehouses > 0 then
-              storage.PlatformWarehouses[surface.name] = platform_warehouses
-          end
-                    -- Find and register platform warehouses
-          -- Only exists on Factorio 2.1+, where Space Age ships the cargo bay
-          -- this entity is built from.
-          if prototypes.entity["preservation-platform-unloading-bay"] then
-              local unloading_bay = surface.find_entities_filtered{
-                  name = "preservation-platform-unloading-bay"
-              }
-              if #unloading_bay > 0 then
-                  storage.PlatformWarehouses[surface.name] = unloading_bay
-              end
-          end
+
+        for _, wagon in pairs(surface.find_entities_filtered{ name = WAGON_NAME }) do
+            queue_add{
+                key = wagon.unit_number,
+                kind = "container",
+                entity = wagon,
+                inventory = defines.inventory.cargo_wagon,
+                full_freeze = false,
+                work = inventory_slots(wagon, defines.inventory.cargo_wagon)
+            }
         end
-        
-        -- Find and register preservation wagons
-        local wagons = surface.find_entities_filtered{
-            name = "preservation-wagon"
-        }
-        for _, wagon in pairs(wagons) do
-            storage.Wagons[wagon.unit_number] = wagon
+
+        -- Freezing cargo bays and unloading bays share one budget per platform.
+        if #platform_names > 0 then
+            local bays = surface.find_entities_filtered{ name = platform_names }
+            if #bays > 0 then
+                storage.PlatformWarehouses[surface.name] = bays
+                register_platform(surface.name)
+            end
         end
     end
 end
 
-
 ---- Event Registration ----
 
 --- Register all event handlers for preservation entities
--- Sets up event handlers for entity creation, removal, and periodic updates.
--- Also handles mod settings changes.
---
 -- @function init_events
 local function init_events()
-    -- Define entity filter for all preservation-related entities
-    local entity_filter = {
-        { filter = "name", name = "refrigerater" },
-        { filter = "name", name = "logistic-refrigerater-passive-provider" },
-        { filter = "name", name = "logistic-refrigerater-requester" },
-        { filter = "name", name = "logistic-refrigerater-buffer" },
-        { filter = "name", name = "preservation-warehouse" },
-        { filter = "name", name = "preservation-wagon" },
-        { filter = "name", name = "preservation-fast-inserter" },
-        { filter = "name", name = "preservation-long-inserter" },
-        { filter = "name", name = "preservation-bulk-inserter" }
-    }
+    init_caches()
 
-    if script.active_mods["space-age"] then
-      table.insert(entity_filter, { filter = "name", name = "preservation-platform-warehouse" })
-      if prototypes.entity["preservation-platform-unloading-bay"] then
-        table.insert(entity_filter, { filter = "name", name = "preservation-platform-unloading-bay" })
-      end
-      table.insert(entity_filter, { filter = "name", name = "preservation-stack-inserter" })
+    -- Only filter on prototypes that exist, so the same registration works with
+    -- and without Space Age and on both 2.0 and 2.1.
+    local tracked = { WAREHOUSE_NAME, WAGON_NAME }
+    for _, names in pairs({ FRIDGE_NAMES, INSERTER_NAMES, PLATFORM_NAMES }) do
+        for _, name in pairs(names) do
+            tracked[#tracked + 1] = name
+        end
     end
-    
+
+    local entity_filter = {}
+    for _, name in pairs(existing_names(tracked)) do
+        entity_filter[#entity_filter + 1] = { filter = "name", name = name }
+    end
+
     -- Register entity creation events
     local creation_events = {
-        defines.events.on_built_entity,              -- Player built
-        defines.events.on_entity_cloned,             -- Entity copied
-        defines.events.on_robot_built_entity,        -- Robot built
-        defines.events.on_space_platform_built_entity, -- Space platform
-        defines.events.script_raised_built,          -- Script created
-        defines.events.script_raised_revive          -- Entity revived
+        defines.events.on_built_entity,               -- Player built
+        defines.events.on_entity_cloned,              -- Entity copied
+        defines.events.on_robot_built_entity,         -- Robot built
+        defines.events.on_space_platform_built_entity,-- Space platform
+        defines.events.script_raised_built,           -- Script created
+        defines.events.script_raised_revive           -- Entity revived
     }
     for _, event in pairs(creation_events) do
         script.on_event(event, OnEntityCreated, entity_filter)
     end
-    
+
     -- Register entity removal events
     local removal_events = {
         defines.events.on_player_mined_entity,         -- Player removed
@@ -547,7 +685,7 @@ local function init_events()
     for _, event in pairs(removal_events) do
         script.on_event(event, OnEntityRemoved, entity_filter)
     end
-    
+
     -- Register update events
     script.on_event(defines.events.on_tick, on_tick)
     script.on_event(defines.events.on_runtime_mod_setting_changed, init_settings)
@@ -563,13 +701,14 @@ end)
 -- Handle initial mod setup (called when mod is first added to save)
 script.on_init(function()
     init_storages()
-    init_entities()
     init_events()
+    init_entities()
 end)
 
 -- Handle mod configuration changes
 script.on_configuration_changed(function(data)
     init_settings()
-    init_entities()
+    init_storages()
     init_events()
+    init_entities()
 end)

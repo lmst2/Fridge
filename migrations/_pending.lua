@@ -18,3 +18,17 @@ for _, force in pairs(game.forces) do
     recipe.enabled = true
   end
 end
+
+-- Drop the pre-queue tracking tables.
+--
+-- Preservation used to sweep four separate registries (Fridges, Warehouses,
+-- Wagons, PreservationInserters) on a fixed interval; it now drains a single
+-- workload-balanced queue instead. on_configuration_changed rebuilds that queue
+-- by rescanning every surface, so these are dead weight in the save - clearing
+-- them here keeps old saves from carrying the stale entity references around
+-- forever. storage.tick went unused even before this change.
+storage.Fridges = nil
+storage.Warehouses = nil
+storage.Wagons = nil
+storage.PreservationInserters = nil
+storage.tick = nil
