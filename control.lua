@@ -45,9 +45,25 @@ local BEND = 0.5
 -- with time in hand rather than exactly on the deadline.
 local SAFETY = 3 * PERIOD_MIN
 
--- How many near-expiry slots an entry tracks individually before giving up and
--- walking its whole inventory. Past this, targeting costs more than the walk.
-local URGENT_SLOT_CAP = 16
+-- A visit has to stay bounded, or the worst tick grows with the biggest
+-- container in the game: a modded ten-thousand-slot chest would be a 20 ms
+-- stall however carefully everything else is budgeted. So an inventory larger
+-- than this is tracked as several entries, one per slot range. They are
+-- ordinary entries in every other respect - own deadline, own place in the
+-- queue - so splitting needs no special handling and leaves recovery exact.
+local MAX_ENTRY_SLOTS = 200
+
+-- Preservation nudges spoil_tick forward by the elapsed time, it does not reset
+-- it, so a stack held near spoiling stays near spoiling and its container stays
+-- perpetually urgent. Re-walking a whole range every time to refresh a handful
+-- of such stacks is most of the avoidable cost on a mature base, so a range
+-- remembers exactly which slots are near expiry and revisits only those.
+--
+-- There is no threshold at which it gives up and walks the range instead: a
+-- revisit reads only the near-expiry slots, so it is never dearer than a walk,
+-- which also pays for every empty and every fresh slot in between - it only
+-- wins by less as the range fills. The list of slots is bounded anyway, because
+-- the range is (MAX_ENTRY_SLOTS).
 
 -- A preservation warehouse only cools while its power proxy holds this much.
 local WAREHOUSE_ENERGY = 1200000
@@ -184,22 +200,21 @@ local function preserve_stack(stack, recover, tick)
     return current
 end
 
---- Walk an inventory, preserving what can spoil.
+--- Walk one slot range of an inventory, preserving what can spoil.
 --
--- `track` asks for the extra bookkeeping only a full-freeze entry uses: the
--- earliest spoil tick, and which slots hold something close enough to it to be
--- worth revisiting alone. Refrigerators are the most numerous entries and are
--- allowed to spoil, so they skip it.
+-- `track` asks for the earliest spoil tick, which only a full-freeze entry
+-- needs - it drives that entry's urgency. Refrigerators are the most numerous
+-- entries and are allowed to spoil, so they skip it.
 --
+-- @param from,to Slot range this entry owns (a large inventory is split)
 -- @param cap Optional limit on how many stacks are preserved
 -- @return number Slots examined - the visit's real cost
--- @return number|nil Earliest tick anything here spoils
--- @return table|nil Slots near expiry, or nil if there are none or too many
-local function walk(inv, recover, tick, track, cap)
+-- @return number|nil Earliest tick anything in range spoils
+-- @return table|nil Slots near expiry, for a cheap revisit, or nil if none
+local function walk(inv, from, to, recover, tick, track, cap)
     if inv.is_empty() then return 1 end
 
-    local slots = #inv
-    local scanned, preserved = slots, 0
+    local scanned, preserved = to - from + 1, 0
     local horizon = tick + PERIOD_MAX + SAFETY
     local deadline, hot, hot_n = nil, nil, 0
 
@@ -210,7 +225,7 @@ local function walk(inv, recover, tick, track, cap)
     local cache, by_quality = spoil_ticks, quality_changes_spoil
     local ceiling = tick - FRESHNESS_MARGIN
 
-    for i = 1, slots do
+    for i = from, to do
         local stack = inv[i]
         if stack.valid_for_read then
             local spoils_at
@@ -240,19 +255,15 @@ local function walk(inv, recover, tick, track, cap)
                     if not deadline or spoils_at < deadline then
                         deadline = spoils_at
                     end
-                    if hot_n <= URGENT_SLOT_CAP and spoils_at <= horizon then
+                    if spoils_at <= horizon then
                         hot_n = hot_n + 1
-                        if hot_n > URGENT_SLOT_CAP then
-                            hot = nil   -- too many to target; walk it all
-                        else
-                            hot = hot or {}
-                            hot[hot_n] = i
-                        end
+                        hot = hot or {}
+                        hot[hot_n] = i
                     end
                 end
                 preserved = preserved + 1
                 if cap and preserved >= cap then
-                    scanned = i
+                    scanned = i - from + 1
                     break
                 end
             end
@@ -266,10 +277,10 @@ end
 -- Slot indices are stable in Factorio: removing items from one slot does not
 -- compact the others. Anything that does invalidate them - a stack consumed,
 -- or merged away - shows up as a slot that no longer reads, and the caller
--- falls back to a full walk.
+-- falls back to a full walk of the range.
 --
 -- @return number|nil Earliest tick anything in those slots spoils, or nil if
---   the cache is stale and the caller must walk everything
+--   the cache is stale and the caller must walk the range
 local function walk_hot(inv, hot, recover, tick)
     local slots = #inv
     local deadline
@@ -295,17 +306,26 @@ end
 --   bays         freezing cargo bays granting capacity (platform only)
 --   surface      surface name (platform only)
 --   inventory    defines.inventory.* to walk
+--   from,to      slot range this entry owns (a large inventory is split)
 --   full_freeze  stop spoilage rather than slow it
---   work         slots the last full walk examined
+--   work         slots this range examines
 --   last         tick this entry was last processed
 --   due          tick it should next be processed
 --   rate         its share of the per-tick slot budget, work/period
 --   deadline     earliest tick its contents spoil (full-freeze entries only)
+--   seen         its contents have been read at least once (deadline is real)
 --   hot          slots near expiry, for a cheap revisit
+--   count        item total at the last walk, for the large-factory skip
 -- }
 
 local function platform_key(surface_name)
     return "surface:" .. surface_name
+end
+
+--- Key for one slot range of an entity. Chunk 0 keeps the bare unit_number, so
+-- an entity small enough not to split looks exactly as it did before.
+local function chunk_key(unit_number, chunk)
+    return chunk == 0 and unit_number or (unit_number .. "#" .. chunk)
 end
 
 local function entry_for(key)
@@ -313,11 +333,22 @@ local function entry_for(key)
     return position and storage.queue[position]
 end
 
---- What the next visit to this entry is expected to cost, in slots. An entry
+--- What the next visit to this entry is expected to cost, in slots. A range
 -- tracking its near-expiry slots only pays for those.
 local function visit_cost(entry)
     local hot = entry.hot
     return hot and #hot or entry.work
+end
+
+--- Every key covering this entity. Chunks are contiguous from zero, so walking
+-- until one is missing finds them all with no stored list. Collected up front
+-- because removing an entry swaps another into its slot.
+local function chunk_keys(unit_number)
+    local keys = {}
+    while storage.index[chunk_key(unit_number, #keys)] do
+        keys[#keys + 1] = chunk_key(unit_number, #keys)
+    end
+    return keys
 end
 
 local function default_state()
@@ -420,15 +451,28 @@ end
 -- Normally the global period. A full-freeze entry promises its contents do not
 -- spoil, so as its earliest deadline approaches, its period shortens to come
 -- back SAFETY ticks ahead of it - continuously, not as a change of category.
+--
+-- A full-freeze entry that has never been read is treated as if it might be
+-- urgent: it is checked within PERIOD_MIN so its real deadline is learned
+-- before anything short-lived inside it can spoil. Without this, an entry
+-- registered into a large factory inherited that factory's long global period
+-- and its first look could come hundreds of ticks late - long enough for a
+-- freshly stocked freezer of nearly-spoiled goods to rot before it was ever
+-- examined. Because such entries take a short period, the herd from a rebuild
+-- raises `demand` and is cleared in a handful of ticks, then settles.
 local function schedule(entry, tick)
-    local period = global_period()
-
-    local deadline = entry.deadline
-    if deadline and entry.full_freeze then
-        local slack = deadline - tick - SAFETY
-        if slack < period then period = slack end
+    local period
+    if entry.full_freeze and not entry.seen then
+        period = PERIOD_MIN
+    else
+        period = global_period()
+        local deadline = entry.deadline
+        if deadline and entry.full_freeze then
+            local slack = deadline - tick - SAFETY
+            if slack < period then period = slack end
+        end
+        if period < PERIOD_MIN then period = PERIOD_MIN end
     end
-    if period < PERIOD_MIN then period = PERIOD_MIN end
 
     entry.due = tick + period
     storage.demand = storage.demand - (entry.rate or 0) + visit_cost(entry) / period
@@ -453,9 +497,7 @@ end
 local function queue_add(entry)
     if storage.index[entry.key] then return end
 
-    local inv = entry.inventory and entry.entity
-        and entry.entity.get_inventory(entry.inventory)
-    entry.work = inv and #inv or 1
+    entry.work = entry.to and (entry.to - entry.from + 1) or 1
     entry.last = game.tick
     entry.rate = 0
 
@@ -612,28 +654,27 @@ local function process(entry, tick)
         return 0
     end
 
-    local cost
+    -- A range perpetually urgent for a few near-death stacks revisits just
+    -- those, instead of re-reading all MAX_ENTRY_SLOTS every time.
     if entry.hot then
         local deadline = walk_hot(inv, entry.hot, recover, tick)
         if deadline then
-            cost = #entry.hot
             entry.deadline = deadline
-        else
-            entry.hot = nil  -- stale; rebuilt by the full walk below
+            schedule(entry, tick)
+            return #entry.hot
         end
+        entry.hot = nil  -- stale; rebuilt by the full walk below
     end
 
-    if not cost then
-        local scanned, deadline, hot = walk(inv, recover, tick,
-                                            entry.full_freeze, cap)
-        set_work(entry, scanned)
-        entry.deadline, entry.hot = deadline, hot
-        cost = scanned
-        if skip_unchanged then entry.count = inv.get_item_count() end
-    end
+    local scanned, deadline, hot = walk(inv, entry.from or 1, entry.to or #inv,
+                                        recover, tick, entry.full_freeze, cap)
+    set_work(entry, scanned)
+    entry.deadline, entry.hot = deadline, hot
+    entry.seen = true
+    if skip_unchanged then entry.count = inv.get_item_count() end
 
     schedule(entry, tick)
-    return cost
+    return scanned
 end
 
 --- Preserve an inserter's held stack. One slot, no inventory to resolve.
@@ -726,6 +767,16 @@ local function track(entity)
         return
     end
 
+    if not spec.inventory then
+        queue_add {
+            key = entity.unit_number,
+            kind = spec.kind,
+            entity = entity,
+            full_freeze = spec.full_freeze or false,
+        }
+        return
+    end
+
     local proxy
     if spec.kind == "warehouse" then
         proxy = entity.surface.create_entity {
@@ -736,14 +787,24 @@ local function track(entity)
         if not proxy then return end
     end
 
-    queue_add {
-        key = entity.unit_number,
-        kind = spec.kind,
-        entity = entity,
-        proxy = proxy,
-        inventory = spec.inventory,
-        full_freeze = spec.full_freeze or false,
-    }
+    -- Split a large inventory into one entry per slot range, so no single visit
+    -- can cost more than MAX_ENTRY_SLOTS however big the container is.
+    local inv = entity.get_inventory(spec.inventory)
+    local slots = inv and #inv or 1
+    for chunk = 0, floor((slots - 1) / MAX_ENTRY_SLOTS) do
+        local from = chunk * MAX_ENTRY_SLOTS + 1
+        local to = from + MAX_ENTRY_SLOTS - 1
+        queue_add {
+            key = chunk_key(entity.unit_number, chunk),
+            kind = spec.kind,
+            entity = entity,
+            proxy = proxy,
+            inventory = spec.inventory,
+            full_freeze = spec.full_freeze or false,
+            from = from,
+            to = to < slots and to or slots,
+        }
+    end
 end
 
 --- @function OnEntityCreated
@@ -779,7 +840,7 @@ local function OnEntityRemoved(event)
 
     local entry = entry_for(entity.unit_number)
     if entry and entry.proxy and entry.proxy.valid then entry.proxy.destroy() end
-    queue_remove(entity.unit_number)
+    for _, key in pairs(chunk_keys(entity.unit_number)) do queue_remove(key) end
 end
 
 --- Re-check a container a player just moved items in or out of.
@@ -799,13 +860,16 @@ local function OnPlayerMovedItems(event)
     local entity = event.entity
     if not (entity and entity.valid and entity.unit_number) then return end
 
-    local entry = entry_for(entity.unit_number)
-    if not (entry and entry.full_freeze) then return end
-
-    -- Force a full walk, so a stack dropped into any slot is found, and drop
-    -- the item count so the large-factory skip cannot short-circuit it.
-    entry.hot, entry.count = nil, nil
-    expedite(entry, event.tick)
+    -- Every chunk, since the stack could have landed in any slot. Dropping the
+    -- item count also stops the large-factory skip short-circuiting the very
+    -- visit that was asked for.
+    for _, key in pairs(chunk_keys(entity.unit_number)) do
+        local entry = entry_for(key)
+        if entry and entry.full_freeze then
+            entry.hot, entry.count = nil, nil
+            expedite(entry, event.tick)
+        end
+    end
 end
 
 ---- Initialisation ----
