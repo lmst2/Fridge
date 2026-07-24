@@ -15,12 +15,32 @@
 
 ---- Configuration ----
 
--- Ticks for one complete pass over everything tracked. Because recovery is
--- derived from the time that actually elapsed since an entry was last visited
--- (see recovery_for), this is purely a granularity/UPS knob: changing it does
--- not change how fast items spoil, only how often their remaining time is
--- refreshed. 80 is the interval the warehouse sweep already used.
-local UPDATE_PERIOD = 80
+-- How long one complete pass over everything tracked takes, in ticks. The
+-- period adapts to how much there is to preserve (see update_period): a handful
+-- of refrigerators refresh every PERIOD_MIN ticks, a late-game base stretches
+-- out towards PERIOD_MAX so the per-tick cost stays bounded.
+--
+-- Because recovery is derived from the time that actually elapsed since an
+-- entry was last visited (see recovery_for), the period is purely a
+-- granularity/UPS knob: it can move freely between ticks without changing how
+-- fast anything spoils.
+local PERIOD_MIN = 20    -- fastest refresh, for small bases
+local PERIOD_MAX = 300   -- slowest refresh: 5 seconds of game time
+
+-- Slots per tick the mod aims to spend once it is past the trivial range.
+-- At roughly 4.5 us per slot this is about 0.9 ms of a 16.67 ms tick.
+local SLOT_BUDGET = 200
+
+-- Half-width of the Bezier fillet, as a fraction of the workload at which the
+-- flat-budget line would hit PERIOD_MAX. 0.5 lets the per-tick budget drift to
+-- 1.5x SLOT_BUDGET across the bend rather than letting the period overshoot.
+local BEND = 0.5
+
+-- A stack this close to spoiling gets its container refreshed off-budget.
+local URGENT_HORIZON = PERIOD_MAX + PERIOD_MIN
+
+-- Stand-in for "nothing is close to spoiling". Finite so it serialises.
+local NEVER = 2 ^ 40
 
 -- A preservation warehouse only cools while its power proxy holds this much.
 local WAREHOUSE_ENERGY_THRESHOLD = 1200000
@@ -113,10 +133,10 @@ end
 -- @param stack LuaItemStack, already known to be valid_for_read
 -- @param recover Ticks of spoilage to undo
 -- @param tick Current tick
--- @return boolean Whether the stack was spoilable at all
+-- @return number|nil The tick it will now spoil on, or nil if it cannot spoil
 local function preserve_stack(stack, recover, tick)
     local current = stack.spoil_tick
-    if current <= 0 then return false end
+    if current <= 0 then return nil end
 
     local name = stack.name
     local base
@@ -143,9 +163,10 @@ local function preserve_stack(stack, recover, tick)
     local limit = tick + base - FRESHNESS_MARGIN
     if current < limit then
         local extended = current + recover
-        stack.spoil_tick = extended < limit and extended or limit
+        current = extended < limit and extended or limit
+        stack.spoil_tick = current
     end
-    return true
+    return current
 end
 
 --- Preserve every spoilable stack in an inventory.
@@ -154,23 +175,31 @@ end
 -- @param tick Current tick
 -- @param max_stacks Optional cap on how many stacks are preserved
 -- @return number Slots examined - this entry's workload for the scheduler
+-- @return number|nil Earliest tick anything in here spoils, for the fast lane
 local function preserve_inventory(inv, recover, tick, max_stacks)
-    if inv.is_empty() then return 1 end
+    if inv.is_empty() then return 1, nil end
 
     local slots = #inv
     local scanned = slots
     local preserved = 0
+    local deadline
     for i = 1, slots do
         local stack = inv[i]
-        if stack.valid_for_read and preserve_stack(stack, recover, tick) then
-            preserved = preserved + 1
-            if max_stacks and preserved >= max_stacks then
-                scanned = i
-                break
+        if stack.valid_for_read then
+            local spoils_at = preserve_stack(stack, recover, tick)
+            if spoils_at then
+                if not deadline or spoils_at < deadline then
+                    deadline = spoils_at
+                end
+                preserved = preserved + 1
+                if max_stacks and preserved >= max_stacks then
+                    scanned = i
+                    break
+                end
             end
         end
     end
-    return scanned
+    return scanned, deadline
 end
 
 ---- Preservation work queue ----
@@ -200,7 +229,24 @@ local function init_storages()
     storage.cursor = storage.cursor or 1
     storage.total_work = storage.total_work or 0
     storage.work_credit = storage.work_credit or 0
+    storage.next_deadline = storage.next_deadline or NEVER
     storage.PlatformWarehouses = storage.PlatformWarehouses or {}
+end
+
+--- Record when an entry's contents will next spoil.
+-- Only full-freeze entries take part: they promise items do not spoil at all,
+-- so the scheduler must never let a queue delay break that. A refrigerator only
+-- promises *slower* spoilage, which the queue already delivers exactly, so
+-- tracking those here would just drag the fast lane down for no gain.
+-- `next_deadline` is a lower bound, never an exact minimum - it is only ever
+-- pulled earlier here and rebuilt from scratch by the fast lane, so a stale
+-- value costs one extra sweep and can never miss a deadline.
+local function set_deadline(entry, deadline)
+    if not entry.full_freeze then return end
+    entry.deadline = deadline
+    if deadline and deadline < storage.next_deadline then
+        storage.next_deadline = deadline
+    end
 end
 
 --- Update an entry's cached workload, keeping the running total in step.
@@ -217,6 +263,10 @@ local function queue_add(entry)
     if not entry.work or entry.work < 1 then entry.work = 1 end
     entry.last = game.tick
     entry.acc = 0
+    -- Deliberately no deadline yet: it is learned on the first pass. Priming
+    -- new entries as due-now would make a blueprint drop, or the rescan after a
+    -- mod update, mark every freezer urgent at once and hand back exactly the
+    -- one-big-tick spike this scheduler exists to avoid.
 
     local queue = storage.queue
     queue[#queue + 1] = entry
@@ -260,6 +310,48 @@ local function recovery_for(entry, elapsed)
     local aged = math.floor(accumulated / freeze_rates)
     entry.acc = accumulated - aged * freeze_rates
     return elapsed - aged
+end
+
+--- How many ticks a full pass should take, for the current workload.
+--
+-- Three regimes joined into one smooth curve:
+--
+--   tiny workload   period pinned at PERIOD_MIN; the cost is negligible either
+--                   way, so refresh as promptly as is useful
+--   growing         period = work / budget, holding the per-tick cost flat at
+--                   SLOT_BUDGET while the base grows
+--   large           period pinned at PERIOD_MAX, after which the per-tick cost
+--                   necessarily grows with the workload
+--
+-- The join between the last two is a quadratic Bezier whose control point sits
+-- where the two tangents meet, which makes it C1-continuous with the straight
+-- line at one end and with the PERIOD_MAX asymptote at the other. Because the
+-- x-coordinate of that construction is linear in t, there is no quadratic to
+-- solve. Letting the period bend over early is what lets the per-tick budget
+-- drift up to 1.5x SLOT_BUDGET (1.14x a third of the way in, 1.29x two thirds)
+-- instead of blowing straight through the 5 second cap.
+--
+-- Note the only real-time quantity in the whole controller is game.speed, and
+-- it is map state rather than a measurement, so this stays deterministic and
+-- identical on every client. Wall-clock lag is deliberately not consulted: it
+-- is unreadable from a mod, and using it would make spoil_tick depend on how
+-- fast a given machine is, which desyncs multiplayer.
+local function update_period(work)
+    -- Under a speed mod each tick covers less real time, so spend
+    -- proportionally less per tick and let the fast-forward actually go fast.
+    -- Guarded at 1 so slow motion does not shorten the period and waste CPU.
+    local speed = game.speed
+    local budget = speed > 1 and SLOT_BUDGET / speed or SLOT_BUDGET
+
+    if work <= budget * PERIOD_MIN then return PERIOD_MIN end
+
+    local knee = budget * PERIOD_MAX
+    local bend = BEND * knee
+    if work <= knee - bend then return work / budget end
+    if work >= knee + bend then return PERIOD_MAX end
+
+    local remaining = 1 - (work - knee + bend) / (2 * bend)
+    return PERIOD_MAX * (1 - BEND * remaining * remaining)
 end
 
 --- Preserve a platform's hub inventory, up to the capacity its freezing cargo
@@ -306,8 +398,10 @@ local function preserve_platform(entry, tick)
 
     local recover = recovery_for(entry, elapsed)
     if recover > 0 then
-        set_work(entry, preserve_inventory(inv, recover, tick,
-            #warehouses * platform_capacity))
+        local scanned, deadline = preserve_inventory(inv, recover, tick,
+            #warehouses * platform_capacity)
+        set_work(entry, scanned)
+        set_deadline(entry, deadline)
     end
     return false
 end
@@ -342,6 +436,9 @@ local function preserve_entry(entry, tick)
             entry.last = tick
             entry.acc = 0
             set_work(entry, 1)
+            -- Its contents spoil normally now, so drop it out of the fast lane
+            -- rather than letting a stale deadline keep waking it.
+            set_deadline(entry, nil)
             return false
         end
     end
@@ -356,42 +453,86 @@ local function preserve_entry(entry, tick)
     if kind == "inserter" then
         local held = entity.held_stack
         if held and held.valid_for_read then
-            preserve_stack(held, recover, tick)
+            set_deadline(entry, preserve_stack(held, recover, tick))
         end
         return false
     end
 
     local inv = entity.get_inventory(entry.inventory)
     if inv then
-        set_work(entry, preserve_inventory(inv, recover, tick))
+        local scanned, deadline = preserve_inventory(inv, recover, tick)
+        set_work(entry, scanned)
+        set_deadline(entry, deadline)
     else
         set_work(entry, 1)
+        set_deadline(entry, nil)
     end
     return false
 end
 
+--- Refresh anything close to spoiling, ignoring the tick budget.
+--
+-- A full-freeze container promises its contents do not spoil, but the queue
+-- only guarantees a visit once per period, which can be as long as PERIOD_MAX.
+-- An item dropped into a freezer with less life left than that would spoil
+-- while waiting its turn; this lane closes that window.
+--
+-- Gated twice so it costs nothing in the normal case: it runs at most once
+-- every PERIOD_MIN ticks, and only when the tracked lower bound says something
+-- might be close - inside a working freezer nothing ever is. Entries are still
+-- visited at most once per PERIOD_MIN, so a stubbornly nearly-spoiled stack
+-- cannot pin the scheduler. Rebuilds the exact bound as it goes.
+local function urgent_pass(tick)
+    local queue = storage.queue
+    local horizon = tick + URGENT_HORIZON
+    local nearest = NEVER
+    local i = 1
+    while i <= #queue do
+        local entry = queue[i]
+        local deadline = entry.deadline
+        local removed = false
+        if deadline then
+            if deadline <= horizon and tick - entry.last >= PERIOD_MIN then
+                removed = preserve_entry(entry, tick)
+                deadline = (not removed) and entry.deadline or nil
+            end
+            if deadline and deadline < nearest then nearest = deadline end
+        end
+        -- A removed entry pulls the last one into this slot, so hold position.
+        if not removed then i = i + 1 end
+    end
+    storage.next_deadline = nearest
+end
+
 --- Main tick handler: drain a slice of the preservation queue.
--- Credit is carried in "slot-ticks": every tick adds the whole workload, and
--- visiting an entry costs its workload times UPDATE_PERIOD. Over UPDATE_PERIOD
--- ticks that is exactly enough to visit everything once, and because the cost
--- is the entry's own slot count the slice is balanced by real work rather than
--- by container count.
+-- Credit is carried in slots: every tick grants one period's worth of the total
+-- workload, and visiting an entry costs the slots it last had to walk. Because
+-- the cost is the entry's own slot count, the slice is balanced by real work
+-- rather than by container count, and because the grant is derived from the
+-- adaptive period the per-tick cost stays near SLOT_BUDGET as a base grows.
 -- @param event Event data from Factorio runtime
 local function on_tick(event)
     if freeze_rates == 1 then return end
 
     local queue = storage.queue
+    if #queue == 0 then return end
+    local tick = event.tick
+
+    if tick % PERIOD_MIN == 0
+        and (storage.next_deadline or NEVER) <= tick + URGENT_HORIZON then
+        urgent_pass(tick)
+    end
+
     local count = #queue
     if count == 0 then return end
-
     local total = storage.total_work
     if total <= 0 then return end
 
-    local credit = storage.work_credit + total
-    local ceiling = total * UPDATE_PERIOD
-    if credit > ceiling then credit = ceiling end
+    -- Never bank more than one full cycle, so an idle stretch cannot buy a
+    -- burst that undoes the whole point of spreading the work out.
+    local credit = storage.work_credit + total / update_period(total)
+    if credit > total then credit = total end
 
-    local tick = event.tick
     local cursor = storage.cursor
     local visited = 0
 
@@ -400,9 +541,8 @@ local function on_tick(event)
         local entry = queue[cursor]
         if not entry then break end
 
-        local cost = entry.work * UPDATE_PERIOD
-        if cost > credit then break end
-        credit = credit - cost
+        if entry.work > credit then break end
+        credit = credit - entry.work
 
         -- A removed entry pulls the last one into this slot, so hold position.
         if not preserve_entry(entry, tick) then
@@ -560,6 +700,7 @@ local function init_entities()
     storage.cursor = 1
     storage.total_work = 0
     storage.work_credit = 0
+    storage.next_deadline = NEVER
     storage.PlatformWarehouses = {}
 
     local fridge_names = existing_names(FRIDGE_NAMES)
