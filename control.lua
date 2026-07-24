@@ -45,6 +45,11 @@ local URGENT_HORIZON = PERIOD_MAX + PERIOD_MIN
 -- enough to absorb both the scan granularity and a full window of drain delay.
 local URGENT_SERVE_WITHIN = 3 * PERIOD_MIN
 
+-- How many near-expiry slots an entry may track individually before the fast
+-- lane gives up and just walks its whole inventory. Past this, targeting
+-- separate slots costs more than the walk it is trying to avoid.
+local URGENT_SLOT_CAP = 16
+
 -- Stand-in for "nothing is close to spoiling". Finite so it serialises.
 local NEVER = 2 ^ 40
 
@@ -182,13 +187,17 @@ end
 -- @param max_stacks Optional cap on how many stacks are preserved
 -- @return number Slots examined - this entry's workload for the scheduler
 -- @return number|nil Earliest tick anything in here spoils, for the fast lane
+-- @return table|false|nil Slots holding something near expiry, so the fast lane
+--   can revisit those alone instead of the whole inventory; false means there
+--   are too many to be worth tracking and it should walk everything
 local function preserve_inventory(inv, recover, tick, max_stacks)
-    if inv.is_empty() then return 1, nil end
+    if inv.is_empty() then return 1, nil, nil end
 
+    local horizon = tick + URGENT_HORIZON
     local slots = #inv
     local scanned = slots
     local preserved = 0
-    local deadline
+    local deadline, hot
     for i = 1, slots do
         local stack = inv[i]
         if stack.valid_for_read then
@@ -196,6 +205,11 @@ local function preserve_inventory(inv, recover, tick, max_stacks)
             if spoils_at then
                 if not deadline or spoils_at < deadline then
                     deadline = spoils_at
+                end
+                if hot ~= false and spoils_at <= horizon then
+                    hot = hot or {}
+                    hot[#hot + 1] = i
+                    if #hot > URGENT_SLOT_CAP then hot = false end
                 end
                 preserved = preserved + 1
                 if max_stacks and preserved >= max_stacks then
@@ -205,7 +219,34 @@ local function preserve_inventory(inv, recover, tick, max_stacks)
             end
         end
     end
-    return scanned, deadline
+    return scanned, deadline, hot
+end
+
+--- Refresh only the slots already known to hold something near expiry.
+--
+-- The whole point of the fast lane is one dying stack, but a legendary
+-- warehouse is 500 slots and the other 499 have hours left. Walking all of them
+-- to save one made a single dying stack cost as much as the entire rest of the
+-- base. Slot indices are stable in Factorio - removing from one slot does not
+-- compact the others - so the indices found on the last full pass stay valid,
+-- and anything that does invalidate them (a stack consumed, or merged away)
+-- shows up as a slot that no longer reads, which sends us back to a full walk.
+--
+-- @return number|nil Slots touched, or nil if the cache is stale
+-- @return number|nil Earliest tick anything in those slots spoils
+local function preserve_hot_slots(inv, hot, recover, tick)
+    local slots = #inv
+    local deadline
+    for k = 1, #hot do
+        local index = hot[k]
+        if index > slots then return nil end
+        local stack = inv[index]
+        if not stack.valid_for_read then return nil end
+        local spoils_at = preserve_stack(stack, recover, tick)
+        if not spoils_at then return nil end
+        if not deadline or spoils_at < deadline then deadline = spoils_at end
+    end
+    return #hot, deadline
 end
 
 ---- Preservation work queue ----
@@ -413,13 +454,18 @@ local function preserve_platform(entry, tick)
             #warehouses * platform_capacity)
         set_work(entry, scanned)
         set_deadline(entry, deadline)
+        -- A hub's walk is already bounded by the bays' capacity, and its slot
+        -- indices shift as cargo pods load and unload, so it always walks.
+        entry.hot = false
     end
     return false
 end
 
 --- Run one entry's preservation pass.
+-- @param hot_only Refresh just the slots near expiry, if that is known to be
+--   enough. Falls back to a full walk by itself when the cache is stale.
 -- @return boolean Whether the entry removed itself from the queue
-local function preserve_entry(entry, tick)
+local function preserve_entry(entry, tick, hot_only)
     local kind = entry.kind
     if kind == "platform" then
         return preserve_platform(entry, tick)
@@ -450,6 +496,7 @@ local function preserve_entry(entry, tick)
             -- Its contents spoil normally now, so drop it out of the fast lane
             -- rather than letting a stale deadline keep waking it.
             set_deadline(entry, nil)
+            entry.hot = nil
             return false
         end
     end
@@ -470,14 +517,26 @@ local function preserve_entry(entry, tick)
     end
 
     local inv = entity.get_inventory(entry.inventory)
-    if inv then
-        local scanned, deadline = preserve_inventory(inv, recover, tick)
-        set_work(entry, scanned)
-        set_deadline(entry, deadline)
-    else
+    if not inv then
         set_work(entry, 1)
         set_deadline(entry, nil)
+        entry.hot = nil
+        return false
     end
+
+    if hot_only and entry.hot then
+        local _, deadline = preserve_hot_slots(inv, entry.hot, recover, tick)
+        if deadline then
+            set_deadline(entry, deadline)
+            return false
+        end
+        -- Cache went stale, so fall through and rebuild it from a full walk.
+    end
+
+    local scanned, deadline, hot = preserve_inventory(inv, recover, tick)
+    set_work(entry, scanned)
+    set_deadline(entry, deadline)
+    entry.hot = hot
     return false
 end
 
@@ -498,6 +557,15 @@ end
 --- Rebuild the urgent set. O(n) in integer compares, no API calls, and gated on
 -- the tracked lower bound, so in a working freezer it almost never runs.
 -- Recomputes that bound exactly while it is here.
+--- What one fast-lane visit to this entry costs, in slots. An entry tracking
+-- its near-expiry slots individually only pays for those; one that gave up on
+-- tracking them pays for the whole inventory.
+local function urgent_cost(entry)
+    local hot = entry.hot
+    if hot and #hot > 0 then return #hot end
+    return entry.work
+end
+
 local function urgent_scan(tick)
     local queue = storage.queue
     local horizon = tick + URGENT_HORIZON
@@ -509,9 +577,10 @@ local function urgent_scan(tick)
         if deadline then
             if deadline < nearest then nearest = deadline end
             if deadline <= horizon then
+                local cost = urgent_cost(entry)
                 urgent[#urgent + 1] = entry.key
-                work = work + entry.work
-                if entry.work > largest then largest = entry.work end
+                work = work + cost
+                if cost > largest then largest = cost end
             end
         end
     end
@@ -562,9 +631,10 @@ local function urgent_drain(tick)
         if entry and entry.deadline
             and entry.deadline - tick <= URGENT_SERVE_WITHIN
             and tick - entry.last >= PERIOD_MIN then
-            if entry.work > credit then break end
-            credit = credit - entry.work
-            preserve_entry(entry, tick)
+            local cost = urgent_cost(entry)
+            if cost > credit then break end
+            credit = credit - cost
+            preserve_entry(entry, tick, true)
         end
         cursor = cursor + 1
     end
