@@ -500,41 +500,27 @@ local function update_period(work)
     return PERIOD_MAX * (1 - BEND * remaining * remaining)
 end
 
---- Preserve a platform's hub inventory, up to the capacity its freezing cargo
--- bays provide. The hub is cached on the entry; the old code searched the whole
--- surface for it on every sweep.
+--- Preserve one chunk of a platform hub's inventory. The hub is cached on the
+-- entry; the covered slot range is the chunk's own from/to.
 -- @return boolean Whether the entry removed itself
 local function preserve_platform(entry, tick)
     local surface = game.surfaces[entry.surface]
-    local warehouses = storage.PlatformWarehouses[entry.surface]
-    if not (surface and warehouses) then
-        queue_remove(entry.key)
-        return true
-    end
-
-    -- Surviving bays set the capacity, so drop dead ones as we count.
-    for i = #warehouses, 1, -1 do
-        local warehouse = warehouses[i]
-        if not (warehouse and warehouse.valid) then
-            table.remove(warehouses, i)
-        end
-    end
-    if #warehouses == 0 then
-        storage.PlatformWarehouses[entry.surface] = nil
+    local bays = storage.PlatformWarehouses[entry.surface]
+    if not (surface and bays and #bays > 0) then
         queue_remove(entry.key)
         return true
     end
 
     local hub = entry.entity
     if not (hub and hub.valid) then
-        hub = surface.find_entities_filtered{ name = "space-platform-hub" }[1]
+        hub = (surface.platform and surface.platform.hub)
+            or surface.find_entities_filtered{ name = "space-platform-hub" }[1]
         entry.entity = hub
     end
 
     local inv = hub and hub.get_inventory(defines.inventory.hub_main)
     if not inv then
         entry.last = tick
-        set_work(entry, 1)
         return false
     end
 
@@ -544,12 +530,15 @@ local function preserve_platform(entry, tick)
 
     local recover = recovery_for(entry, elapsed)
     if recover > 0 then
-        local scanned, deadline = preserve_inventory(inv, recover, tick,
-            #warehouses * platform_capacity)
-        set_work(entry, scanned)
-        set_deadline(entry, deadline, tick)
-        -- A hub's walk is already bounded by the bays' capacity, and its slot
-        -- indices shift as cargo pods load and unload, so it always walks.
+        local to = entry.to < #inv and entry.to or #inv
+        if entry.from <= to then
+            local scanned, deadline = preserve_inventory(inv, recover, tick, nil,
+                entry.from, to)
+            set_work(entry, scanned)
+            set_deadline(entry, deadline, tick)
+        end
+        -- Hub slot indices shift as cargo pods load and unload, so slot-level
+        -- tracking is unreliable; the fast lane full-walks the chunk instead.
         entry.hot = false
     end
     return false
@@ -853,16 +842,53 @@ end
 
 ---- Runtime Events ----
 
---- Start tracking a platform surface, if it is not tracked already.
+--- Key for one slot range of a platform hub. Chunk 0 keeps the bare
+-- "surface:<name>" so a small platform looks as it did before splitting.
+local function platform_key(surface_name, chunk)
+    local base = "surface:" .. surface_name
+    return chunk == 0 and base or (base .. "#" .. chunk)
+end
+
+local function platform_chunk_keys(surface_name)
+    local keys = {}
+    while storage.index[platform_key(surface_name, #keys)] do
+        keys[#keys + 1] = platform_key(surface_name, #keys)
+    end
+    return keys
+end
+
+--- (Re)build a platform surface's entries to match its current bay count.
+--
+-- The freezing bays each add `platform_capacity` slots to the hub, so their
+-- combined budget is that times the bay count, and it always fits inside the
+-- hub. Splitting that budget into ranges means one entry per MAX_ENTRY_SLOTS,
+-- so a platform with many bays is spread like any large container rather than
+-- walked whole. Called whenever a bay is built or removed: the new entries'
+-- work sums to the new budget, so the scheduler's total workload tracks the
+-- bay count immediately instead of discovering it on the next walk.
 local function register_platform(surface_name)
-    if storage.index["surface:" .. surface_name] then return end
-    queue_add{
-        key = "surface:" .. surface_name,
-        kind = "platform",
-        surface = surface_name,
-        full_freeze = true,
-        work = platform_capacity
-    }
+    for _, key in pairs(platform_chunk_keys(surface_name)) do
+        queue_remove(key)
+    end
+
+    local bays = storage.PlatformWarehouses[surface_name]
+    if not bays or #bays == 0 then return end
+
+    local budget = #bays * platform_capacity
+    for chunk = 0, math.floor((budget - 1) / MAX_ENTRY_SLOTS) do
+        local from = chunk * MAX_ENTRY_SLOTS + 1
+        local to = from + MAX_ENTRY_SLOTS - 1
+        if to > budget then to = budget end
+        queue_add{
+            key = platform_key(surface_name, chunk),
+            kind = "platform",
+            surface = surface_name,
+            full_freeze = true,
+            from = from,
+            to = to,
+            work = to - from + 1
+        }
+    end
 end
 
 --- Handle creation of preservation entities
@@ -966,18 +992,20 @@ local function OnEntityRemoved(event)
 
     if IS_PLATFORM[name] then
         local surface_name = entity.surface.name
-        local warehouses = storage.PlatformWarehouses[surface_name]
-        if warehouses then
-            for i = #warehouses, 1, -1 do
-                if warehouses[i] == entity then
-                    table.remove(warehouses, i)
+        local bays = storage.PlatformWarehouses[surface_name]
+        if bays then
+            for i = #bays, 1, -1 do
+                if bays[i] == entity then
+                    table.remove(bays, i)
                     break
                 end
             end
-            if #warehouses == 0 then
+            if #bays == 0 then
                 storage.PlatformWarehouses[surface_name] = nil
-                queue_remove("surface:" .. surface_name)
             end
+            -- One fewer bay: re-chunk to the smaller budget (removes all chunks
+            -- when the list is now empty).
+            register_platform(surface_name)
         end
         return
     end
