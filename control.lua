@@ -56,6 +56,20 @@ local URGENT_SERVE_WITHIN = 3 * PERIOD_MIN
 -- separate slots costs more than the walk it is trying to avoid.
 local URGENT_SLOT_CAP = 16
 
+-- Largest slot range a single entry covers. An inventory bigger than this is
+-- tracked as several entries, one per range, so no single pass can cost more
+-- than this however big the container - a modded ten-thousand-slot chest is
+-- fifty entries, not one stall. A normal container is one entry and unchanged.
+local MAX_ENTRY_SLOTS = 200
+
+-- The warmup window (see prime_entries), and how many slots it primes per tick.
+-- A warehouse's power proxy is created empty and only powers up a tick or two
+-- later, so priming spreads across this window rather than firing once. Sized
+-- so a large base is fully primed well within a short-lived item's life without
+-- any single tick paying for the whole thing.
+local WARMUP_TICKS = 60
+local WARMUP_BUDGET = 3 * SLOT_BUDGET
+
 -- Stand-in for "nothing is close to spoiling". Finite so it serialises.
 local NEVER = 2 ^ 40
 
@@ -196,15 +210,18 @@ end
 -- @return table|false|nil Slots holding something near expiry, so the fast lane
 --   can revisit those alone instead of the whole inventory; false means there
 --   are too many to be worth tracking and it should walk everything
-local function preserve_inventory(inv, recover, tick, max_stacks)
+-- @param from,to Slot range this entry owns; a large inventory is split across
+--   several entries so no single pass walks more than MAX_ENTRY_SLOTS slots.
+local function preserve_inventory(inv, recover, tick, max_stacks, from, to)
     if inv.is_empty() then return 1, nil, nil end
 
+    from = from or 1
+    to = to or #inv
     local horizon = tick + URGENT_HORIZON
-    local slots = #inv
-    local scanned = slots
+    local scanned = to - from + 1
     local preserved = 0
     local deadline, hot
-    for i = 1, slots do
+    for i = from, to do
         local stack = inv[i]
         if stack.valid_for_read then
             local spoils_at = preserve_stack(stack, recover, tick)
@@ -219,7 +236,7 @@ local function preserve_inventory(inv, recover, tick, max_stacks)
                 end
                 preserved = preserved + 1
                 if max_stacks and preserved >= max_stacks then
-                    scanned = i
+                    scanned = i - from + 1
                     break
                 end
             end
@@ -269,6 +286,7 @@ end
 --   entity       container / inserter / platform hub
 --   proxy        power proxy (warehouse only)
 --   inventory    defines.inventory.* to walk (containers only)
+--   from,to      slot range this entry owns (a large inventory is split)
 --   surface      surface name (platform only)
 --   full_freeze  true stops spoilage outright, false slows it by freeze_rates
 --   work         cached slot count, at least 1
@@ -289,6 +307,8 @@ local function init_storages()
     storage.urgent_credit = storage.urgent_credit or 0
     storage.urgent_accum = storage.urgent_accum or 0
     storage.urgent_accum_largest = storage.urgent_accum_largest or 1
+    storage.warmup = storage.warmup or 0
+    storage.warmup_cursor = storage.warmup_cursor or 1
     storage.PlatformWarehouses = storage.PlatformWarehouses or {}
 end
 
@@ -381,6 +401,45 @@ end
 local function inventory_slots(entity, inventory)
     local inv = entity.get_inventory(inventory)
     return inv and #inv or 1
+end
+
+--- Key for one slot range of an entity. Chunk 0 keeps the bare unit_number, so
+-- an entity small enough not to split looks exactly as it did before.
+local function chunk_key(unit_number, chunk)
+    return chunk == 0 and unit_number or (unit_number .. "#" .. chunk)
+end
+
+--- Every key covering this entity. Chunks are contiguous from zero, so walking
+-- until one is missing finds them all with no stored list.
+local function chunk_keys(unit_number)
+    local keys = {}
+    while storage.index[chunk_key(unit_number, #keys)] do
+        keys[#keys + 1] = chunk_key(unit_number, #keys)
+    end
+    return keys
+end
+
+--- Register a container, splitting a large inventory into one entry per range.
+-- Every entry shares the entity (and the warehouse's power proxy); each walks
+-- only its own slots.
+local function register_container(entity, kind, inventory, full_freeze, proxy)
+    local slots = inventory_slots(entity, inventory)
+    for chunk = 0, math.floor((slots - 1) / MAX_ENTRY_SLOTS) do
+        local from = chunk * MAX_ENTRY_SLOTS + 1
+        local to = from + MAX_ENTRY_SLOTS - 1
+        if to > slots then to = slots end
+        queue_add{
+            key = chunk_key(entity.unit_number, chunk),
+            kind = kind,
+            entity = entity,
+            proxy = proxy,
+            inventory = inventory,
+            full_freeze = full_freeze,
+            from = from,
+            to = to,
+            work = to - from + 1
+        }
+    end
 end
 
 ---- Scheduler ----
@@ -572,7 +631,8 @@ local function preserve_entry(entry, tick, hot_only)
         -- Cache went stale, so fall through and rebuild it from a full walk.
     end
 
-    local scanned, deadline, hot = preserve_inventory(inv, recover, tick)
+    local scanned, deadline, hot = preserve_inventory(inv, recover, tick, nil,
+        entry.from, entry.to)
     set_work(entry, scanned)
     set_deadline(entry, deadline, tick)
     entry.hot = hot
@@ -683,12 +743,68 @@ end
 -- rather than by container count, and because the grant is derived from the
 -- adaptive period the per-tick cost stays near SLOT_BUDGET as a base grows.
 -- @param event Event data from Factorio runtime
+--- Learn every entry's deadline the moment the queue is (re)built.
+--
+-- Without this a freshly built queue has no deadlines, so the fast lane cannot
+-- see which containers hold something close to spoiling until the main cursor
+-- reaches each one - up to a full period later. On a large base that is long
+-- enough for short-lived goods that were near expiry at load to rot first. One
+-- read-only pass (recover = 0 preserves nothing, it only records the earliest
+-- spoil tick and the near-expiry slots) closes that window: the fast lane can
+-- protect anything urgent from the very first tick. Repeated over WARMUP_TICKS
+-- because a warehouse's proxy is created empty and only powers up a tick later.
+--
+-- Spread across the warmup window a slot budget at a time, from a cursor that
+-- wraps, so no single tick pays for the whole base - priming everything at once
+-- on the tick the proxies powered up was a 140 ms stall on a large factory.
+local function prime_entries()
+    local queue = storage.queue
+    local n = #queue
+    if n == 0 then return end
+
+    local tick = game.tick
+    local cursor = storage.warmup_cursor or 1
+    local budget = WARMUP_BUDGET
+    local checked = 0
+    while checked < n and budget > 0 do
+        if cursor > n then cursor = 1 end
+        local entry = queue[cursor]
+        if entry and not entry.primed and entry.inventory
+            and entry.entity and entry.entity.valid then
+            local powered = entry.kind ~= "warehouse"
+                or (entry.proxy and entry.proxy.valid
+                    and entry.proxy.energy > WAREHOUSE_ENERGY_THRESHOLD)
+            if powered then
+                local inv = entry.entity.get_inventory(entry.inventory)
+                if inv then
+                    local scanned, deadline, hot = preserve_inventory(
+                        inv, 0, tick, nil, entry.from, entry.to)
+                    set_work(entry, scanned)
+                    set_deadline(entry, deadline, tick)
+                    entry.hot = hot
+                    entry.primed = true
+                    budget = budget - entry.work
+                end
+            end
+        end
+        cursor = cursor + 1
+        checked = checked + 1
+    end
+    storage.warmup_cursor = cursor
+end
+
 local function on_tick(event)
     if freeze_rates == 1 then return end
 
     local queue = storage.queue
     if #queue == 0 then return end
     local tick = event.tick
+
+    -- Keep priming until every entry has come online, so a warehouse whose
+    -- proxy was still charging at the rebuild still gets its deadline learned.
+    if storage.warmup and tick <= storage.warmup then
+        prime_entries()
+    end
 
     urgent_drain(tick)
 
@@ -770,15 +886,7 @@ local function OnEntityCreated(event)
             force = entity.force
         }
         if proxy then
-            queue_add{
-                key = entity.unit_number,
-                kind = "warehouse",
-                entity = entity,
-                proxy = proxy,
-                inventory = defines.inventory.chest,
-                full_freeze = true,
-                work = inventory_slots(entity, defines.inventory.chest)
-            }
+            register_container(entity, "warehouse", defines.inventory.chest, true, proxy)
         end
 
     elseif IS_PLATFORM[name] then
@@ -792,24 +900,10 @@ local function OnEntityCreated(event)
         register_platform(surface_name)
 
     elseif IS_FRIDGE[name] then
-        queue_add{
-            key = entity.unit_number,
-            kind = "container",
-            entity = entity,
-            inventory = defines.inventory.chest,
-            full_freeze = false,
-            work = inventory_slots(entity, defines.inventory.chest)
-        }
+        register_container(entity, "container", defines.inventory.chest, false)
 
     elseif name == WAGON_NAME then
-        queue_add{
-            key = entity.unit_number,
-            kind = "container",
-            entity = entity,
-            inventory = defines.inventory.cargo_wagon,
-            full_freeze = false,
-            work = inventory_slots(entity, defines.inventory.cargo_wagon)
-        }
+        register_container(entity, "container", defines.inventory.cargo_wagon, false)
 
     elseif IS_INSERTER[name] then
         queue_add{
@@ -848,13 +942,15 @@ local function OnPlayerMovedItems(event)
     local entity = event.entity
     if not (entity and entity.valid and entity.unit_number) then return end
 
-    local position = storage.index[entity.unit_number]
-    local entry = position and storage.queue[position]
-    if not (entry and entry.full_freeze) then return end
-
-    entry.hot = nil
-    entry.deadline = event.tick
-    watch(entry)
+    -- Every chunk, since the stack could have landed in any slot range.
+    for _, key in pairs(chunk_keys(entity.unit_number)) do
+        local entry = storage.queue[storage.index[key]]
+        if entry and entry.full_freeze then
+            entry.hot = nil
+            entry.deadline = event.tick
+            watch(entry)
+        end
+    end
 end
 
 --- Handle removal of preservation entities
@@ -893,7 +989,10 @@ local function OnEntityRemoved(event)
             entry.proxy.destroy()
         end
     end
-    queue_remove(entity.unit_number)
+    -- Remove every chunk of the entity, not just chunk 0.
+    for _, key in pairs(chunk_keys(entity.unit_number)) do
+        queue_remove(key)
+    end
 end
 
 ---- Initialization Functions ----
@@ -938,14 +1037,7 @@ local function init_entities()
         -- so every scan below is guarded on having something to look for.
         if #fridge_names > 0 then
             for _, fridge in pairs(surface.find_entities_filtered{ name = fridge_names }) do
-                queue_add{
-                    key = fridge.unit_number,
-                    kind = "container",
-                    entity = fridge,
-                    inventory = defines.inventory.chest,
-                    full_freeze = false,
-                    work = inventory_slots(fridge, defines.inventory.chest)
-                }
+                register_container(fridge, "container", defines.inventory.chest, false)
             end
         end
 
@@ -968,27 +1060,12 @@ local function init_entities()
                 force = warehouse.force
             }
             if proxy then
-                queue_add{
-                    key = warehouse.unit_number,
-                    kind = "warehouse",
-                    entity = warehouse,
-                    proxy = proxy,
-                    inventory = defines.inventory.chest,
-                    full_freeze = true,
-                    work = inventory_slots(warehouse, defines.inventory.chest)
-                }
+                register_container(warehouse, "warehouse", defines.inventory.chest, true, proxy)
             end
         end
 
         for _, wagon in pairs(surface.find_entities_filtered{ name = WAGON_NAME }) do
-            queue_add{
-                key = wagon.unit_number,
-                kind = "container",
-                entity = wagon,
-                inventory = defines.inventory.cargo_wagon,
-                full_freeze = false,
-                work = inventory_slots(wagon, defines.inventory.cargo_wagon)
-            }
+            register_container(wagon, "container", defines.inventory.cargo_wagon, false)
         end
 
         -- Freezing cargo bays and unloading bays share one budget per platform.
@@ -1000,6 +1077,10 @@ local function init_entities()
             end
         end
     end
+
+    storage.warmup_cursor = 1
+    prime_entries()
+    storage.warmup = game.tick + WARMUP_TICKS
 end
 
 ---- Event Registration ----
