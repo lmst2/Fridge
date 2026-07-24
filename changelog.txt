@@ -1,9 +1,4 @@
 ---------------------------------------------------------------------------------------------------
-Version: 0.3.3
-Date: 2026-07-24
-  Bugfixes:
-    - Fixed the Space Freezing Warehouse (Freezing Cargo Bay) becoming unavailable on existing saves after its recipe moved to a dedicated technology; it is now restored for forces that had already researched Space platform.
----------------------------------------------------------------------------------------------------
 Version: 0.3.1
 Date: 2026-07-21
   Changes:
