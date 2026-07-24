@@ -1,15 +1,37 @@
 {
   "threads": [
     {
+      "id": "67c8d3155ae620a8b0fdbcce",
+      "title": "Stack/Bulk Preservation Inserter names are incorrect [Fixed]",
+      "url": "https://mods.factorio.com/mod/Fridge/discussion/67c8d3155ae620a8b0fdbcce",
+      "author": "macintacos",
+      "tag": "General",
+      "replies": 3,
+      "posted_at": "2025-03-05T22:41:25.087000",
+      "last_message_by": "LightningMaster",
+      "last_message_at": "2026-07-24T15:13:27.056000"
+    },
+    {
       "id": "6a4bd019c549ce66f3c5aab5",
       "title": "Update 2.1 ?",
       "url": "https://mods.factorio.com/mod/Fridge/discussion/6a4bd019c549ce66f3c5aab5",
       "author": "Dreams68",
       "tag": "General",
-      "replies": 3,
+      "replies": 4,
       "posted_at": "2026-07-06T15:56:09.390000",
       "last_message_by": "LightningMaster",
-      "last_message_at": "2026-07-21T02:09:38.274000"
+      "last_message_at": "2026-07-24T14:11:06.496000"
+    },
+    {
+      "id": "6893128885ce3fe47438ac7d",
+      "title": "Missing space platform cargo bay technology [Automatically Fixed]",
+      "url": "https://mods.factorio.com/mod/Fridge/discussion/6893128885ce3fe47438ac7d",
+      "author": "UltraJohn",
+      "tag": "Bugs",
+      "replies": 2,
+      "posted_at": "2025-08-06T08:30:00.082000",
+      "last_message_by": "LightningMaster",
+      "last_message_at": "2026-07-24T14:00:03.975000"
     },
     {
       "id": "6965395e4a05e29d3e43049b",
@@ -34,37 +56,16 @@
       "last_message_at": "2025-10-11T22:07:10.729000"
     },
     {
-      "id": "67c8d3155ae620a8b0fdbcce",
-      "title": "Stack/Bulk Preservation Inserter names are incorrect",
-      "url": "https://mods.factorio.com/mod/Fridge/discussion/67c8d3155ae620a8b0fdbcce",
-      "author": "macintacos",
-      "tag": "General",
-      "replies": 2,
-      "posted_at": "2025-03-05T22:41:25.087000",
-      "last_message_by": "skyl3lazer",
-      "last_message_at": "2025-10-05T12:56:59.897000"
-    },
-    {
       "id": "6850190c0095b4bdfb76ee13",
       "title": "Freezing every 2 seconds",
       "url": "https://mods.factorio.com/mod/Fridge/discussion/6850190c0095b4bdfb76ee13",
       "author": "CommanderTTM",
       "tag": "General",
-      "replies": 1,
+      "replies": 2,
       "posted_at": "2025-06-16T13:15:56.406000",
       "last_message_by": "Buggi",
-      "last_message_at": "2025-08-11T19:24:35.567000"
-    },
-    {
-      "id": "6893128885ce3fe47438ac7d",
-      "title": "Missing space platform cargo bay technology",
-      "url": "https://mods.factorio.com/mod/Fridge/discussion/6893128885ce3fe47438ac7d",
-      "author": "UltraJohn",
-      "tag": "Bugs",
-      "replies": 1,
-      "posted_at": "2025-08-06T08:30:00.082000",
-      "last_message_by": "GrandPotato",
-      "last_message_at": "2025-08-06T18:09:17.711000"
+      "last_message_at": "2025-08-11T19:24:35.563000",
+      "change": "new_reply"
     },
     {
       "id": "687001a0f28356cb36bcfe55",
@@ -235,7 +236,7 @@
       "id": "67377f50e168657f16c34a87",
       "title": "error while game [Fixed]",
       "url": "https://mods.factorio.com/mod/Fridge/discussion/67377f50e168657f16c34a87",
-      "author": "TheVlot",
+      "author": "Shpdibaum",
       "tag": "Bugs",
       "replies": 2,
       "posted_at": "2024-11-15T17:05:20.371000",
