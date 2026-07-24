@@ -36,8 +36,14 @@ local SLOT_BUDGET = 200
 -- 1.5x SLOT_BUDGET across the bend rather than letting the period overshoot.
 local BEND = 0.5
 
--- A stack this close to spoiling gets its container refreshed off-budget.
+-- A stack this close to spoiling gets its container watched by the fast lane.
 local URGENT_HORIZON = PERIOD_MAX + PERIOD_MIN
+
+-- ...but being watched is not the same as being refreshed. An entry is only
+-- actually served once it is this close to expiring, so a stack with 150 ticks
+-- of life waits instead of being rewritten every window for no reason. Wide
+-- enough to absorb both the scan granularity and a full window of drain delay.
+local URGENT_SERVE_WITHIN = 3 * PERIOD_MIN
 
 -- Stand-in for "nothing is close to spoiling". Finite so it serialises.
 local NEVER = 2 ^ 40
@@ -230,6 +236,11 @@ local function init_storages()
     storage.total_work = storage.total_work or 0
     storage.work_credit = storage.work_credit or 0
     storage.next_deadline = storage.next_deadline or NEVER
+    storage.urgent = storage.urgent or {}
+    storage.urgent_work = storage.urgent_work or 0
+    storage.urgent_largest = storage.urgent_largest or 1
+    storage.urgent_cursor = storage.urgent_cursor or 1
+    storage.urgent_credit = storage.urgent_credit or 0
     storage.PlatformWarehouses = storage.PlatformWarehouses or {}
 end
 
@@ -470,38 +481,96 @@ local function preserve_entry(entry, tick)
     return false
 end
 
---- Refresh anything close to spoiling, ignoring the tick budget.
+---- Near-expiry fast lane ----
 --
--- A full-freeze container promises its contents do not spoil, but the queue
--- only guarantees a visit once per period, which can be as long as PERIOD_MAX.
--- An item dropped into a freezer with less life left than that would spoil
--- while waiting its turn; this lane closes that window.
+-- A full-freeze container promises its contents do not spoil, but the main
+-- queue only guarantees a visit once per period, which can be as long as
+-- PERIOD_MAX. A stack with less life left than that would spoil while waiting
+-- its turn. This lane revisits those containers every PERIOD_MIN ticks instead.
 --
--- Gated twice so it costs nothing in the normal case: it runs at most once
--- every PERIOD_MIN ticks, and only when the tracked lower bound says something
--- might be close - inside a working freezer nothing ever is. Entries are still
--- visited at most once per PERIOD_MIN, so a stubbornly nearly-spoiled stack
--- cannot pin the scheduler. Rebuilds the exact bound as it goes.
-local function urgent_pass(tick)
+-- It is a second queue, not a bypass. Serving every urgent container the
+-- instant it qualifies would put the whole urgent set on one tick - the exact
+-- shape of stall this scheduler exists to remove, just reached through a
+-- different door. A Gleba base buffering nutrients through fifty freezing
+-- warehouses is enough to trigger it. So the lane carries its own credit and
+-- spreads its work across the same PERIOD_MIN ticks it has to finish within.
+
+--- Rebuild the urgent set. O(n) in integer compares, no API calls, and gated on
+-- the tracked lower bound, so in a working freezer it almost never runs.
+-- Recomputes that bound exactly while it is here.
+local function urgent_scan(tick)
     local queue = storage.queue
     local horizon = tick + URGENT_HORIZON
-    local nearest = NEVER
-    local i = 1
-    while i <= #queue do
+    local urgent, work, largest, nearest = {}, 0, 1, NEVER
+
+    for i = 1, #queue do
         local entry = queue[i]
         local deadline = entry.deadline
-        local removed = false
         if deadline then
-            if deadline <= horizon and tick - entry.last >= PERIOD_MIN then
-                removed = preserve_entry(entry, tick)
-                deadline = (not removed) and entry.deadline or nil
+            if deadline < nearest then nearest = deadline end
+            if deadline <= horizon then
+                urgent[#urgent + 1] = entry.key
+                work = work + entry.work
+                if entry.work > largest then largest = entry.work end
             end
-            if deadline and deadline < nearest then nearest = deadline end
         end
-        -- A removed entry pulls the last one into this slot, so hold position.
-        if not removed then i = i + 1 end
     end
+
+    storage.urgent = urgent
+    storage.urgent_work = work
+    storage.urgent_largest = largest
+    storage.urgent_cursor = 1
+    -- Each scan opens a fresh PERIOD_MIN-tick window to drain that set in.
+    -- Carrying credit over would let an idle window bankroll the next one.
+    storage.urgent_credit = 0
     storage.next_deadline = nearest
+end
+
+--- Work through the urgent set, spread over PERIOD_MIN ticks.
+-- Granting urgent_work/PERIOD_MIN per tick means the set is drained in exactly
+-- the PERIOD_MIN ticks before urgent_scan rebuilds it, so every urgent entry is
+-- still visited once per PERIOD_MIN - the guarantee is unchanged, only the
+-- spike is gone. Entries are held by key rather than position because a removal
+-- swaps the last entry into the freed slot.
+local function urgent_drain(tick)
+    local urgent = storage.urgent
+    local count = #urgent
+    local cursor = storage.urgent_cursor
+    -- Stop granting once the set is drained. Letting credit build through the
+    -- idle tail of a window would hand the next window enough to serve every
+    -- urgent entry on a single tick, which is the stall this lane exists to
+    -- avoid rather than a budget for it.
+    if count == 0 or cursor > count then return end
+
+    -- Ceiling is one tick's grant plus the largest single entry: enough to
+    -- always afford the biggest warehouse in the set even when the grant alone
+    -- would not cover it, but never enough to bank a crowd. Entries skipped for
+    -- having been served recently advance the cursor without spending, and
+    -- without this the credit they leave behind would burst on a later cluster.
+    local grant = storage.urgent_work / PERIOD_MIN
+    local credit = storage.urgent_credit + grant
+    local ceiling = grant + storage.urgent_largest
+    if credit > ceiling then credit = ceiling end
+    while cursor <= count do
+        local position = storage.index[urgent[cursor]]
+        local entry = position and storage.queue[position]
+        -- Skipping is free, so only spend credit on entries actually served.
+        -- Serving on urgency rather than on membership is what keeps a crowd of
+        -- merely-nearby deadlines from costing a full refresh every window: a
+        -- stack with 150 ticks left is touched about every 110 ticks, not every
+        -- 20, and still never gets closer than PERIOD_MIN to spoiling.
+        if entry and entry.deadline
+            and entry.deadline - tick <= URGENT_SERVE_WITHIN
+            and tick - entry.last >= PERIOD_MIN then
+            if entry.work > credit then break end
+            credit = credit - entry.work
+            preserve_entry(entry, tick)
+        end
+        cursor = cursor + 1
+    end
+
+    storage.urgent_cursor = cursor
+    storage.urgent_credit = credit
 end
 
 --- Main tick handler: drain a slice of the preservation queue.
@@ -518,10 +587,16 @@ local function on_tick(event)
     if #queue == 0 then return end
     local tick = event.tick
 
-    if tick % PERIOD_MIN == 0
-        and (storage.next_deadline or NEVER) <= tick + URGENT_HORIZON then
-        urgent_pass(tick)
+    if tick % PERIOD_MIN == 0 then
+        if (storage.next_deadline or NEVER) <= tick + URGENT_HORIZON then
+            urgent_scan(tick)
+        elseif #storage.urgent > 0 then
+            storage.urgent = {}
+            storage.urgent_work = 0
+            storage.urgent_largest = 1
+        end
     end
+    urgent_drain(tick)
 
     local count = #queue
     if count == 0 then return end
@@ -701,6 +776,11 @@ local function init_entities()
     storage.total_work = 0
     storage.work_credit = 0
     storage.next_deadline = NEVER
+    storage.urgent = {}
+    storage.urgent_work = 0
+    storage.urgent_largest = 1
+    storage.urgent_cursor = 1
+    storage.urgent_credit = 0
     storage.PlatformWarehouses = {}
 
     local fridge_names = existing_names(FRIDGE_NAMES)
