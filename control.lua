@@ -45,25 +45,14 @@ local BEND = 0.5
 -- with time in hand rather than exactly on the deadline.
 local SAFETY = 3 * PERIOD_MIN
 
--- A visit has to stay bounded, or the worst tick grows with the biggest
--- container in the game: a modded ten-thousand-slot chest would be a 20 ms
--- stall however carefully everything else is budgeted. So an inventory larger
--- than this is tracked as several entries, one per slot range. They are
--- ordinary entries in every other respect - own deadline, own place in the
--- queue - so splitting needs no special handling and leaves recovery exact.
-local MAX_ENTRY_SLOTS = 200
-
--- Preservation nudges spoil_tick forward by the elapsed time, it does not reset
--- it, so a stack held near spoiling stays near spoiling and its container stays
--- perpetually urgent. Re-walking a whole range every time to refresh a handful
--- of such stacks is most of the avoidable cost on a mature base, so a range
--- remembers exactly which slots are near expiry and revisits only those.
---
--- There is no threshold at which it gives up and walks the range instead: a
--- revisit reads only the near-expiry slots, so it is never dearer than a walk,
--- which also pays for every empty and every fresh slot in between - it only
--- wins by less as the range fills. The list of slots is bounded anyway, because
--- the range is (MAX_ENTRY_SLOTS).
+-- A visit walks its whole range, so the worst tick would otherwise grow with
+-- the biggest container in the game - a modded ten-thousand-slot chest would
+-- stall however carefully everything else is budgeted. An inventory larger
+-- than this is tracked as several entries, one per slot range, each an ordinary
+-- queue member with its own deadline. A visit then costs at most this many
+-- slots whatever the container's size; a small container is one entry and looks
+-- unchanged.
+local MAX_ENTRY_SLOTS = 50
 
 -- A preservation warehouse only cools while its power proxy holds this much.
 local WAREHOUSE_ENERGY = 1200000
@@ -210,13 +199,11 @@ end
 -- @param cap Optional limit on how many stacks are preserved
 -- @return number Slots examined - the visit's real cost
 -- @return number|nil Earliest tick anything in range spoils
--- @return table|nil Slots near expiry, for a cheap revisit, or nil if none
 local function walk(inv, from, to, recover, tick, track, cap)
     if inv.is_empty() then return 1 end
 
     local scanned, preserved = to - from + 1, 0
-    local horizon = tick + PERIOD_MAX + SAFETY
-    local deadline, hot, hot_n = nil, nil, 0
+    local deadline
 
     -- The body of preserve_stack, inlined. A Lua call per slot measured at 39%
     -- of this loop's total cost - the walk is the one place in the mod where
@@ -251,15 +238,8 @@ local function walk(inv, from, to, recover, tick, track, cap)
                 end
             end
             if spoils_at then
-                if track then
-                    if not deadline or spoils_at < deadline then
-                        deadline = spoils_at
-                    end
-                    if spoils_at <= horizon then
-                        hot_n = hot_n + 1
-                        hot = hot or {}
-                        hot[hot_n] = i
-                    end
+                if track and (not deadline or spoils_at < deadline) then
+                    deadline = spoils_at
                 end
                 preserved = preserved + 1
                 if cap and preserved >= cap then
@@ -269,31 +249,7 @@ local function walk(inv, from, to, recover, tick, track, cap)
             end
         end
     end
-    return scanned, deadline, hot
-end
-
---- Revisit only the slots last seen holding something near expiry.
---
--- Slot indices are stable in Factorio: removing items from one slot does not
--- compact the others. Anything that does invalidate them - a stack consumed,
--- or merged away - shows up as a slot that no longer reads, and the caller
--- falls back to a full walk of the range.
---
--- @return number|nil Earliest tick anything in those slots spoils, or nil if
---   the cache is stale and the caller must walk the range
-local function walk_hot(inv, hot, recover, tick)
-    local slots = #inv
-    local deadline
-    for k = 1, #hot do
-        local index = hot[k]
-        if index > slots then return nil end
-        local stack = inv[index]
-        if not stack.valid_for_read then return nil end
-        local spoils_at = preserve_stack(stack, recover, tick)
-        if not spoils_at then return nil end
-        if not deadline or spoils_at < deadline then deadline = spoils_at end
-    end
-    return deadline
+    return scanned, deadline
 end
 
 ---- Entries ----
@@ -314,7 +270,6 @@ end
 --   rate         its share of the per-tick slot budget, work/period
 --   deadline     earliest tick its contents spoil (full-freeze entries only)
 --   seen         its contents have been read at least once (deadline is real)
---   hot          slots near expiry, for a cheap revisit
 --   count        item total at the last walk, for the large-factory skip
 -- }
 
@@ -331,13 +286,6 @@ end
 local function entry_for(key)
     local position = storage.index[key]
     return position and storage.queue[position]
-end
-
---- What the next visit to this entry is expected to cost, in slots. A range
--- tracking its near-expiry slots only pays for those.
-local function visit_cost(entry)
-    local hot = entry.hot
-    return hot and #hot or entry.work
 end
 
 --- Every key covering this entity. Chunks are contiguous from zero, so walking
@@ -475,8 +423,8 @@ local function schedule(entry, tick)
     end
 
     entry.due = tick + period
-    storage.demand = storage.demand - (entry.rate or 0) + visit_cost(entry) / period
-    entry.rate = visit_cost(entry) / period
+    storage.demand = storage.demand - (entry.rate or 0) + entry.work / period
+    entry.rate = entry.work / period
     heap_push(entry.due, entry.key)
 end
 
@@ -610,7 +558,7 @@ local function process(entry, tick)
         -- the full-walk figure: it is what a visit *might* cost, and shrinking
         -- it would let a base-wide power cut collapse the whole budget.
         entry.last = tick
-        entry.deadline, entry.hot, entry.count = nil, nil, nil
+        entry.deadline, entry.count = nil, nil
         schedule(entry, tick)
         return 1
     end
@@ -654,22 +602,10 @@ local function process(entry, tick)
         return 0
     end
 
-    -- A range perpetually urgent for a few near-death stacks revisits just
-    -- those, instead of re-reading all MAX_ENTRY_SLOTS every time.
-    if entry.hot then
-        local deadline = walk_hot(inv, entry.hot, recover, tick)
-        if deadline then
-            entry.deadline = deadline
-            schedule(entry, tick)
-            return #entry.hot
-        end
-        entry.hot = nil  -- stale; rebuilt by the full walk below
-    end
-
-    local scanned, deadline, hot = walk(inv, entry.from or 1, entry.to or #inv,
-                                        recover, tick, entry.full_freeze, cap)
+    local scanned, deadline = walk(inv, entry.from or 1, entry.to or #inv,
+                                   recover, tick, entry.full_freeze, cap)
     set_work(entry, scanned)
-    entry.deadline, entry.hot = deadline, hot
+    entry.deadline = deadline
     entry.seen = true
     if skip_unchanged then entry.count = inv.get_item_count() end
 
@@ -866,7 +802,7 @@ local function OnPlayerMovedItems(event)
     for _, key in pairs(chunk_keys(entity.unit_number)) do
         local entry = entry_for(key)
         if entry and entry.full_freeze then
-            entry.hot, entry.count = nil, nil
+            entry.count = nil
             expedite(entry, event.tick)
         end
     end
