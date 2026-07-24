@@ -282,6 +282,11 @@ local function init_storages()
     storage.urgent_largest = storage.urgent_largest or 1
     storage.urgent_cursor = storage.urgent_cursor or 1
     storage.urgent_credit = storage.urgent_credit or 0
+    storage.scan_cursor = storage.scan_cursor or 1
+    storage.scan_build = storage.scan_build or {}
+    storage.scan_work = storage.scan_work or 0
+    storage.scan_largest = storage.scan_largest or 1
+    storage.scan_nearest = storage.scan_nearest or NEVER
     storage.PlatformWarehouses = storage.PlatformWarehouses or {}
 end
 
@@ -566,33 +571,89 @@ local function urgent_cost(entry)
     return entry.work
 end
 
-local function urgent_scan(tick)
-    local queue = storage.queue
-    local horizon = tick + URGENT_HORIZON
-    local urgent, work, largest, nearest = {}, 0, 1, NEVER
+--- Abandon any half-built sweep and start over.
+local function urgent_reset()
+    storage.urgent = {}
+    storage.urgent_work = 0
+    storage.urgent_largest = 1
+    storage.urgent_cursor = 1
+    storage.urgent_credit = 0
+    storage.scan_cursor = 1
+    storage.scan_build = {}
+    storage.scan_work = 0
+    storage.scan_largest = 1
+    storage.scan_nearest = NEVER
+end
 
-    for i = 1, #queue do
+--- Advance the rebuild of the urgent set by one slice.
+--
+-- Rebuilding it in a single pass cost about 0.5 us per entry: invisible on a
+-- small base, a 10 ms stall on twenty thousand freezers. That is the same
+-- periodic spike this scheduler exists to remove, just smaller and further out,
+-- so the sweep is spread the same way everything else is - a slice per tick,
+-- covering the queue every PERIOD_MIN ticks. Detection latency is unchanged.
+--
+-- Reads entry.deadline and nothing else: plain Lua numbers already in storage,
+-- no API calls, no inventory access, and one pass per *container* rather than
+-- per slot. That is what separates it from the old sweep it replaced.
+--
+-- Double-buffered, so the lane always drains a complete self-consistent set
+-- rather than a half-built one.
+local function urgent_scan_slice(tick)
+    local queue = storage.queue
+    local count = #queue
+    if count == 0 then return end
+
+    local horizon = tick + URGENT_HORIZON
+    local build = storage.scan_build
+    local work = storage.scan_work
+    local largest = storage.scan_largest
+    local nearest = storage.scan_nearest
+
+    local first = storage.scan_cursor
+    local last = first + math.ceil(count / PERIOD_MIN) - 1
+    if last > count then last = count end
+
+    for i = first, last do
         local entry = queue[i]
-        local deadline = entry.deadline
+        local deadline = entry and entry.deadline
         if deadline then
             if deadline < nearest then nearest = deadline end
             if deadline <= horizon then
                 local cost = urgent_cost(entry)
-                urgent[#urgent + 1] = entry.key
+                build[#build + 1] = entry.key
                 work = work + cost
                 if cost > largest then largest = cost end
             end
         end
     end
 
-    storage.urgent = urgent
+    if last < count then
+        storage.scan_cursor = last + 1
+        storage.scan_work = work
+        storage.scan_largest = largest
+        storage.scan_nearest = nearest
+        return
+    end
+
+    -- Sweep complete: publish it and reopen the drain from the start.
+    --
+    -- Credit deliberately carries over. Zeroing it here starves any entry
+    -- costing more than one window's worth of grant: a sweep covers the queue
+    -- in ceil(count/slice) ticks, which is not exactly PERIOD_MIN, so an entry
+    -- that dominates the urgent workload could never be afforded before the
+    -- reset wiped the savings, and it spoiled. The ceiling in urgent_drain is
+    -- what bounds a burst, not this.
+    storage.urgent = build
     storage.urgent_work = work
     storage.urgent_largest = largest
     storage.urgent_cursor = 1
-    -- Each scan opens a fresh PERIOD_MIN-tick window to drain that set in.
-    -- Carrying credit over would let an idle window bankroll the next one.
-    storage.urgent_credit = 0
     storage.next_deadline = nearest
+    storage.scan_cursor = 1
+    storage.scan_build = {}
+    storage.scan_work = 0
+    storage.scan_largest = 1
+    storage.scan_nearest = NEVER
 end
 
 --- Work through the urgent set, spread over PERIOD_MIN ticks.
@@ -657,14 +718,10 @@ local function on_tick(event)
     if #queue == 0 then return end
     local tick = event.tick
 
-    if tick % PERIOD_MIN == 0 then
-        if (storage.next_deadline or NEVER) <= tick + URGENT_HORIZON then
-            urgent_scan(tick)
-        elseif #storage.urgent > 0 then
-            storage.urgent = {}
-            storage.urgent_work = 0
-            storage.urgent_largest = 1
-        end
+    if (storage.next_deadline or NEVER) <= tick + URGENT_HORIZON then
+        urgent_scan_slice(tick)
+    elseif #storage.urgent > 0 or #storage.scan_build > 0 then
+        urgent_reset()
     end
     urgent_drain(tick)
 
@@ -851,6 +908,11 @@ local function init_entities()
     storage.urgent_largest = 1
     storage.urgent_cursor = 1
     storage.urgent_credit = 0
+    storage.scan_cursor = 1
+    storage.scan_build = {}
+    storage.scan_work = 0
+    storage.scan_largest = 1
+    storage.scan_nearest = NEVER
     storage.PlatformWarehouses = {}
 
     local fridge_names = existing_names(FRIDGE_NAMES)
