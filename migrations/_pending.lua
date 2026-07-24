@@ -31,4 +31,5 @@ storage.Fridges = nil
 storage.Warehouses = nil
 storage.Wagons = nil
 storage.PreservationInserters = nil
+storage.PlatformWarehouses = nil
 storage.tick = nil

@@ -1,155 +1,145 @@
 --- Fridge Mod Control Script
--- Implements preservation mechanics for refrigerators, warehouses, and related entities
--- that extend item spoilage time through various cooling mechanisms.
+-- Preservation mechanics for refrigerators, warehouses and related entities:
+-- everything this mod tracks slows or stops the spoilage of what it holds.
 --
--- Preservation used to run as a periodic sweep: every N ticks, walk every stack
--- in every tracked container and rewrite its spoil_tick. That put the entire
--- factory's cost on a single tick, which is what players saw as a recurring
--- freeze. It is now a continuously drained work queue instead - see the
--- "Preservation work queue" and "Scheduler" sections.
+-- The whole runtime is one idea. Every tracked object is an *entry* with a
+-- *due tick*; a min-heap keeps them in due order; each tick spends a slot
+-- budget on whatever has come due. An entry's period is normally the global
+-- one, which widens as the factory grows so the per-tick cost stays flat, but
+-- shortens towards PERIOD_MIN as its contents approach spoiling. Urgency is a
+-- rate, not a category, so there is no second queue and nothing to be in or
+-- out of.
+--
+-- Two properties make that safe. Recovery is derived from the time actually
+-- elapsed since an entry was last visited, so the scheduler may visit whenever
+-- it likes without changing how fast anything spoils. And a visit is charged
+-- what it really cost rather than a prediction, so an entry that turns out
+-- expensive ends the tick instead of overrunning it.
 --
 -- @module control
 -- @author LightningMaster
 -- @license MIT
 -- @copyright 2025
 
+local floor = math.floor
+
 ---- Configuration ----
 
--- How long one complete pass over everything tracked takes, in ticks. The
--- period adapts to how much there is to preserve (see update_period): a handful
--- of refrigerators refresh every PERIOD_MIN ticks, a late-game base stretches
--- out towards PERIOD_MAX so the per-tick cost stays bounded.
---
--- Because recovery is derived from the time that actually elapsed since an
--- entry was last visited (see recovery_for), the period is purely a
--- granularity/UPS knob: it can move freely between ticks without changing how
--- fast anything spoils.
+-- Bounds on how long one pass over everything takes. The period adapts to the
+-- workload between them (see global_period); because recovery is elapsed-based
+-- it is purely a granularity/UPS knob and can move freely between ticks.
 local PERIOD_MIN = 20    -- fastest refresh, for small bases
 local PERIOD_MAX = 300   -- slowest refresh: 5 seconds of game time
 
--- Slots per tick the mod aims to spend once it is past the trivial range.
--- At roughly 4.5 us per slot this is about 0.9 ms of a 16.67 ms tick.
+-- Slots per tick the mod aims to spend once past the trivial range. At roughly
+-- 4.5 us per slot this is about 0.9 ms of a 16.67 ms tick.
 local SLOT_BUDGET = 200
 
 -- Half-width of the Bezier fillet, as a fraction of the workload at which the
--- flat-budget line would hit PERIOD_MAX. 0.5 lets the per-tick budget drift to
--- 1.5x SLOT_BUDGET across the bend rather than letting the period overshoot.
+-- flat-budget line would reach PERIOD_MAX. 0.5 lets the per-tick budget drift
+-- to 1.5x SLOT_BUDGET across the bend rather than overshooting the cap.
 local BEND = 0.5
 
--- A stack this close to spoiling gets its container watched by the fast lane.
---
--- Sized so that a main-queue pass alone is enough to notice one: a pass happens
--- at least every PERIOD_MAX ticks, and an entry outside the horizon at one pass
--- still has 3*PERIOD_MIN left at the next. That margin is what lets the watch
--- list be maintained as passes happen, with no separate sweep looking for
--- entries whose deadline has drifted closer.
-local URGENT_HORIZON = PERIOD_MAX + 3 * PERIOD_MIN
+-- How far ahead of spoiling an entry is brought back. Wide enough to absorb a
+-- backlog, so a container that promises its contents do not spoil is revisited
+-- with time in hand rather than exactly on the deadline.
+local SAFETY = 3 * PERIOD_MIN
 
--- ...but being watched is not the same as being refreshed. An entry is only
--- actually served once it is this close to expiring, so a stack with 150 ticks
--- of life waits instead of being rewritten every window for no reason. Wide
--- enough to absorb both the scan granularity and a full window of drain delay.
-local URGENT_SERVE_WITHIN = 3 * PERIOD_MIN
-
--- How many near-expiry slots an entry may track individually before the fast
--- lane gives up and just walks its whole inventory. Past this, targeting
--- separate slots costs more than the walk it is trying to avoid.
+-- How many near-expiry slots an entry tracks individually before giving up and
+-- walking its whole inventory. Past this, targeting costs more than the walk.
 local URGENT_SLOT_CAP = 16
 
--- Stand-in for "nothing is close to spoiling". Finite so it serialises.
-local NEVER = 2 ^ 40
-
 -- A preservation warehouse only cools while its power proxy holds this much.
-local WAREHOUSE_ENERGY_THRESHOLD = 1200000
+local WAREHOUSE_ENERGY = 1200000
 
 -- Items are never pushed closer than this to brand new.
 local FRESHNESS_MARGIN = 3
 
--- Load mod settings
 local freeze_rates = settings.global["fridge-freeze-rate"].value
 local platform_capacity = settings.startup["fridge-space-plantform-capacity"].value
 
---- Entities this mod tracks, grouped by how they preserve.
--- These lists are the single source of truth: the surface scan, the event
--- filter and the build/remove handlers all derive from them, so a name can no
--- longer be handled by one and missed by another.
-local FRIDGE_NAMES = {
-    "refrigerater",
-    "logistic-refrigerater-passive-provider",
-    "logistic-refrigerater-requester",
-    "logistic-refrigerater-buffer"
-}
-local INSERTER_NAMES = {
-    "preservation-fast-inserter",
-    "preservation-long-inserter",
-    "preservation-bulk-inserter",
-    "preservation-stack-inserter"
-}
-local PLATFORM_NAMES = {
-    "preservation-platform-warehouse",
-    "preservation-platform-unloading-bay"
-}
-local WAREHOUSE_NAME = "preservation-warehouse"
-local WAGON_NAME = "preservation-wagon"
+---- Tracked entities ----
 
---- Turn a name list into a lookup set.
-local function name_set(names)
-    local set = {}
+-- One descriptor per prototype this mod preserves. Everything else derives
+-- from this table: the surface scan, the event filter, and what a new entity
+-- becomes when built. A name cannot be handled by one and missed by another.
+--
+--   kind         how the entry is processed
+--   inventory    which inventory to walk
+--   full_freeze  stop spoilage entirely, rather than slow it by freeze_rates
+local TRACKED = {}
+
+local function describe(names, spec)
     for _, name in pairs(names) do
-        set[name] = true
+        TRACKED[name] = spec
     end
-    return set
 end
 
-local IS_FRIDGE = name_set(FRIDGE_NAMES)
-local IS_INSERTER = name_set(INSERTER_NAMES)
-local IS_PLATFORM = name_set(PLATFORM_NAMES)
+describe({ "refrigerater",
+           "logistic-refrigerater-passive-provider",
+           "logistic-refrigerater-requester",
+           "logistic-refrigerater-buffer" },
+         { kind = "container", inventory = defines.inventory.chest })
 
---- Keep only the names that exist in this game.
--- The stack inserter needs Space Age, and the unloading bay additionally needs
--- Factorio 2.1, where Space Age ships the cargo bay it is built from. Filtering
--- on the prototype covers both without version guards at every use site.
-local function existing_names(names)
+describe({ "preservation-wagon" },
+         { kind = "container", inventory = defines.inventory.cargo_wagon })
+
+describe({ "preservation-fast-inserter",
+           "preservation-long-inserter",
+           "preservation-bulk-inserter",
+           "preservation-stack-inserter" },
+         { kind = "inserter" })
+
+describe({ "preservation-warehouse" },
+         { kind = "warehouse", inventory = defines.inventory.chest,
+           full_freeze = true })
+
+-- Freezing cargo bays and unloading bays do not hold items themselves; they
+-- grant capacity to the platform hub, which is what actually gets preserved.
+describe({ "preservation-platform-warehouse",
+           "preservation-platform-unloading-bay" },
+         { kind = "bay" })
+
+local PROXY_NAME = "warehouse-power-proxy"
+
+--- The tracked names that exist in this game, as a find_entities_filtered list.
+-- The stack inserter needs Space Age and the unloading bay additionally needs
+-- Factorio 2.1; filtering on the prototype covers both without version guards.
+local function tracked_names()
     local present = {}
-    for _, name in pairs(names) do
-        if prototypes.entity[name] then
-            present[#present + 1] = name
-        end
+    for name in pairs(TRACKED) do
+        if prototypes.entity[name] then present[#present + 1] = name end
     end
+    table.sort(present)  -- pairs() order is not stable across saves
     return present
 end
 
----- Prototype caches ----
+---- Prototype cache ----
 
--- Rebuilt on every load and deliberately kept out of `storage`: prototype data
--- cannot change without a reload. Re-reading `stack.prototype` and calling
--- get_spoil_ticks() for every stack on every pass was the single largest cost
--- in the old sweep.
+-- Rebuilt on every load and deliberately outside `storage`: prototype data
+-- cannot change without one. Re-reading `stack.prototype` and calling
+-- get_spoil_ticks() per stack was the largest cost in the original sweep.
 local spoil_ticks = {}
 local quality_changes_spoil = false
 
-local function init_caches()
+local function init_cache()
     spoil_ticks = {}
-    -- Vanilla qualities all leave spoil time alone, so the cache can be keyed
-    -- by item name only and the stack's quality never has to be read. Any mod
-    -- that does change it forces the slower, fully correct path.
+    -- Vanilla qualities leave spoil time alone, so the cache can be keyed by
+    -- item name and the stack's quality never read. A mod that does change it
+    -- forces the slower, fully correct path.
     local ok, changed = pcall(function()
         for _, quality in pairs(prototypes.quality) do
-            if quality.spoil_ticks_multiplier ~= 1 then
-                return true
-            end
+            if quality.spoil_ticks_multiplier ~= 1 then return true end
         end
         return false
     end)
     quality_changes_spoil = (not ok) or changed
 end
 
----- Preservation ----
+---- Preserving stacks ----
 
---- Push one stack's spoil time back, without letting it become fresher than new.
+--- Push one stack's spoil time back, never past brand new.
 -- @param stack LuaItemStack, already known to be valid_for_read
--- @param recover Ticks of spoilage to undo
--- @param tick Current tick
 -- @return number|nil The tick it will now spoil on, or nil if it cannot spoil
 local function preserve_stack(stack, recover, tick)
     local current = stack.spoil_tick
@@ -186,39 +176,46 @@ local function preserve_stack(stack, recover, tick)
     return current
 end
 
---- Preserve every spoilable stack in an inventory.
--- @param inv LuaInventory
--- @param recover Ticks of spoilage to undo
--- @param tick Current tick
--- @param max_stacks Optional cap on how many stacks are preserved
--- @return number Slots examined - this entry's workload for the scheduler
--- @return number|nil Earliest tick anything in here spoils, for the fast lane
--- @return table|false|nil Slots holding something near expiry, so the fast lane
---   can revisit those alone instead of the whole inventory; false means there
---   are too many to be worth tracking and it should walk everything
-local function preserve_inventory(inv, recover, tick, max_stacks)
-    if inv.is_empty() then return 1, nil, nil end
+--- Walk an inventory, preserving what can spoil.
+--
+-- `track` asks for the extra bookkeeping only a full-freeze entry uses: the
+-- earliest spoil tick, and which slots hold something close enough to it to be
+-- worth revisiting alone. Refrigerators are the most numerous entries and are
+-- allowed to spoil, so they skip it.
+--
+-- @param cap Optional limit on how many stacks are preserved
+-- @return number Slots examined - the visit's real cost
+-- @return number|nil Earliest tick anything here spoils
+-- @return table|nil Slots near expiry, or nil if there are none or too many
+local function walk(inv, recover, tick, track, cap)
+    if inv.is_empty() then return 1 end
 
-    local horizon = tick + URGENT_HORIZON
     local slots = #inv
-    local scanned = slots
-    local preserved = 0
-    local deadline, hot
+    local scanned, preserved = slots, 0
+    local horizon = tick + PERIOD_MAX + SAFETY
+    local deadline, hot, hot_n = nil, nil, 0
+
     for i = 1, slots do
         local stack = inv[i]
         if stack.valid_for_read then
             local spoils_at = preserve_stack(stack, recover, tick)
             if spoils_at then
-                if not deadline or spoils_at < deadline then
-                    deadline = spoils_at
-                end
-                if hot ~= false and spoils_at <= horizon then
-                    hot = hot or {}
-                    hot[#hot + 1] = i
-                    if #hot > URGENT_SLOT_CAP then hot = false end
+                if track then
+                    if not deadline or spoils_at < deadline then
+                        deadline = spoils_at
+                    end
+                    if hot_n <= URGENT_SLOT_CAP and spoils_at <= horizon then
+                        hot_n = hot_n + 1
+                        if hot_n > URGENT_SLOT_CAP then
+                            hot = nil   -- too many to target; walk it all
+                        else
+                            hot = hot or {}
+                            hot[hot_n] = i
+                        end
+                    end
                 end
                 preserved = preserved + 1
-                if max_stacks and preserved >= max_stacks then
+                if cap and preserved >= cap then
                     scanned = i
                     break
                 end
@@ -228,19 +225,16 @@ local function preserve_inventory(inv, recover, tick, max_stacks)
     return scanned, deadline, hot
 end
 
---- Refresh only the slots already known to hold something near expiry.
+--- Revisit only the slots last seen holding something near expiry.
 --
--- The whole point of the fast lane is one dying stack, but a legendary
--- warehouse is 500 slots and the other 499 have hours left. Walking all of them
--- to save one made a single dying stack cost as much as the entire rest of the
--- base. Slot indices are stable in Factorio - removing from one slot does not
--- compact the others - so the indices found on the last full pass stay valid,
--- and anything that does invalidate them (a stack consumed, or merged away)
--- shows up as a slot that no longer reads, which sends us back to a full walk.
+-- Slot indices are stable in Factorio: removing items from one slot does not
+-- compact the others. Anything that does invalidate them - a stack consumed,
+-- or merged away - shows up as a slot that no longer reads, and the caller
+-- falls back to a full walk.
 --
--- @return number|nil Slots touched, or nil if the cache is stale
--- @return number|nil Earliest tick anything in those slots spoils
-local function preserve_hot_slots(inv, hot, recover, tick)
+-- @return number|nil Earliest tick anything in those slots spoils, or nil if
+--   the cache is stale and the caller must walk everything
+local function walk_hot(inv, hot, recover, tick)
     local slots = #inv
     local deadline
     for k = 1, #hot do
@@ -252,181 +246,125 @@ local function preserve_hot_slots(inv, hot, recover, tick)
         if not spoils_at then return nil end
         if not deadline or spoils_at < deadline then deadline = spoils_at end
     end
-    return #hot, deadline
+    return deadline
 end
 
----- Preservation work queue ----
---
--- Everything tracked is one entry in `storage.queue`, and each entry caches
--- `work`: how many inventory slots its last pass had to walk. The scheduler
--- spends a fixed share of the *total* workload per tick, so a packed legendary
--- warehouse and an empty refrigerator no longer cost the same slice, and no
--- single tick ever pays for the whole factory.
+---- Entries ----
 --
 -- entry = {
---   key          unit_number, or "surface:<name>" for a platform
+--   key          unit_number, or "surface:<name>" for a platform hub
 --   kind         "container" | "warehouse" | "inserter" | "platform"
---   entity       container / inserter / platform hub
+--   entity       the container, inserter or hub
 --   proxy        power proxy (warehouse only)
---   inventory    defines.inventory.* to walk (containers only)
+--   bays         freezing cargo bays granting capacity (platform only)
 --   surface      surface name (platform only)
---   full_freeze  true stops spoilage outright, false slows it by freeze_rates
---   work         cached slot count, at least 1
+--   inventory    defines.inventory.* to walk
+--   full_freeze  stop spoilage rather than slow it
+--   work         slots the last full walk examined
 --   last         tick this entry was last processed
---   acc          leftover fractional aging in ticks, see recovery_for
+--   due          tick it should next be processed
+--   rate         its share of the per-tick slot budget, work/period
+--   deadline     earliest tick its contents spoil (full-freeze entries only)
+--   hot          slots near expiry, for a cheap revisit
 -- }
 
-local function init_storages()
-    storage.queue = storage.queue or {}
-    storage.index = storage.index or {}
-    storage.cursor = storage.cursor or 1
-    storage.total_work = storage.total_work or 0
-    storage.work_credit = storage.work_credit or 0
-    storage.urgent = storage.urgent or {}
-    storage.urgent_work = storage.urgent_work or 0
-    storage.urgent_largest = storage.urgent_largest or 1
-    storage.urgent_cursor = storage.urgent_cursor or 1
-    storage.urgent_credit = storage.urgent_credit or 0
-    storage.urgent_accum = storage.urgent_accum or 0
-    storage.urgent_accum_largest = storage.urgent_accum_largest or 1
-    storage.PlatformWarehouses = storage.PlatformWarehouses or {}
+local function platform_key(surface_name)
+    return "surface:" .. surface_name
 end
 
---- What one fast-lane visit to this entry costs, in slots. An entry tracking
--- its near-expiry slots individually only pays for those; one that gave up on
--- tracking them pays for the whole inventory.
-local function urgent_cost(entry)
-    local hot = entry.hot
-    if hot and #hot > 0 then return #hot end
-    return entry.work
-end
-
---- Put an entry on the fast lane's watch list, if it is not on it already.
-local function watch(entry)
-    if entry.watched then return end
-    entry.watched = true
-
-    local urgent = storage.urgent
-    urgent[#urgent + 1] = entry.key
-
-    -- Count it towards the current cycle straight away, so a set that grows
-    -- mid-cycle is still funded rather than waiting for the next wrap.
-    local cost = urgent_cost(entry)
-    storage.urgent_work = storage.urgent_work + cost
-    if cost > storage.urgent_largest then storage.urgent_largest = cost end
-end
-
---- Record when an entry's contents will next spoil, and start watching it if
--- that is soon.
---
--- Only full-freeze entries take part: they promise items do not spoil at all,
--- so the scheduler must never let a queue delay break that. A refrigerator only
--- promises *slower* spoilage, which the queue already delivers exactly, so
--- tracking those here would just drag the fast lane down for no gain.
---
--- Membership is decided here, as passes happen, rather than by a separate sweep
--- hunting for entries whose deadline has drifted closer. URGENT_HORIZON is wide
--- enough that a pass always catches one with time to spare, which is what makes
--- that sweep unnecessary.
-local function set_deadline(entry, deadline, tick)
-    if not entry.full_freeze then return end
-    entry.deadline = deadline
-    if deadline and deadline - tick <= URGENT_HORIZON then
-        watch(entry)
-    end
-end
-
---- Update an entry's cached workload, keeping the running total in step.
-local function set_work(entry, work)
-    if work < 1 then work = 1 end
-    if work ~= entry.work then
-        storage.total_work = storage.total_work + work - entry.work
-        entry.work = work
-    end
-end
-
-local function queue_add(entry)
-    if storage.index[entry.key] then return end
-    if not entry.work or entry.work < 1 then entry.work = 1 end
-    entry.last = game.tick
-    entry.acc = 0
-    -- Deliberately no deadline yet: it is learned on the first pass. Priming
-    -- new entries as due-now would make a blueprint drop, or the rescan after a
-    -- mod update, mark every freezer urgent at once and hand back exactly the
-    -- one-big-tick spike this scheduler exists to avoid.
-
-    local queue = storage.queue
-    queue[#queue + 1] = entry
-    storage.index[entry.key] = #queue
-    storage.total_work = storage.total_work + entry.work
-end
-
---- Remove an entry in constant time by swapping the last one into its place.
-local function queue_remove(key)
+local function entry_for(key)
     local position = storage.index[key]
-    if not position then return end
+    return position and storage.queue[position]
+end
 
-    local queue = storage.queue
-    local last = #queue
-    storage.total_work = storage.total_work - queue[position].work
-    storage.index[key] = nil
-    if position ~= last then
-        queue[position] = queue[last]
-        storage.index[queue[position].key] = position
+--- What the next visit to this entry is expected to cost, in slots. An entry
+-- tracking its near-expiry slots only pays for those.
+local function visit_cost(entry)
+    local hot = entry.hot
+    return hot and #hot or entry.work
+end
+
+local function default_state()
+    return {
+        queue = {},       -- array of entries
+        index = {},       -- key -> position in queue
+        heap_due = {},    -- min-heap of due ticks...
+        heap_key = {},    -- ...and the key each belongs to
+        total_work = 0,   -- sum of entry.work, drives the global period
+        demand = 0,       -- sum of entry.rate, the per-tick slot grant
+        credit = 0,       -- slots banked towards the next visit
+    }
+end
+
+local function reset_state()
+    for field, value in pairs(default_state()) do storage[field] = value end
+end
+
+local function init_state()
+    if not storage.queue then reset_state() end
+end
+
+---- Due-order heap ----
+--
+-- Entries are pushed with the due tick they had when scheduled. Rescheduling
+-- pushes a fresh pair and leaves the old one to be discarded on pop, which
+-- costs one comparison and saves maintaining positions.
+
+local function heap_push(due, key)
+    local dues, keys = storage.heap_due, storage.heap_key
+    local i = #dues + 1
+    dues[i], keys[i] = due, key
+    while i > 1 do
+        local parent = floor(i / 2)
+        if dues[parent] <= dues[i] then break end
+        dues[parent], dues[i] = dues[i], dues[parent]
+        keys[parent], keys[i] = keys[i], keys[parent]
+        i = parent
     end
-    queue[last] = nil
 end
 
---- Slots in an entity's tracked inventory, for the initial workload estimate.
-local function inventory_slots(entity, inventory)
-    local inv = entity.get_inventory(inventory)
-    return inv and #inv or 1
+local function heap_pop()
+    local dues, keys = storage.heap_due, storage.heap_key
+    local n = #dues
+    if n == 0 then return nil end
+
+    local key = keys[1]
+    dues[1], keys[1] = dues[n], keys[n]
+    dues[n], keys[n] = nil, nil
+    n = n - 1
+
+    local i = 1
+    while true do
+        local left, right, best = i * 2, i * 2 + 1, i
+        if left <= n and dues[left] < dues[best] then best = left end
+        if right <= n and dues[right] < dues[best] then best = right end
+        if best == i then break end
+        dues[i], dues[best] = dues[best], dues[i]
+        keys[i], keys[best] = keys[best], keys[i]
+        i = best
+    end
+    return key
 end
 
----- Scheduler ----
+---- Scheduling ----
 
---- Ticks of spoilage to undo, given how long since this entry's last pass.
--- Deriving recovery from elapsed time rather than a fixed per-sweep constant is
--- what lets the scheduler visit an entry whenever it has budget: visited after
--- 60 ticks it gets exactly twice the nudge of one visited after 30, so the
--- effective spoil rate is identical either way. `acc` carries the remainder
--- below one full freeze_rates step so nothing is lost to rounding.
-local function recovery_for(entry, elapsed)
-    if entry.full_freeze then return elapsed end
-    local accumulated = entry.acc + elapsed
-    local aged = math.floor(accumulated / freeze_rates)
-    entry.acc = accumulated - aged * freeze_rates
-    return elapsed - aged
-end
-
---- How many ticks a full pass should take, for the current workload.
+--- How long a full pass should take at this workload.
 --
--- Three regimes joined into one smooth curve:
+-- Three regimes joined smoothly: pinned at PERIOD_MIN while the cost is
+-- trivial; work/SLOT_BUDGET while that holds the per-tick cost flat; pinned at
+-- PERIOD_MAX beyond, after which per-tick cost necessarily grows. The join
+-- between the last two is a quadratic Bezier whose control point sits where
+-- the two tangents meet, making it C1-continuous with the line at one end and
+-- the asymptote at the other; that construction's x-coordinate is linear in t,
+-- so there is no quadratic to solve. Bending early is what lets the per-tick
+-- budget drift to 1.5x SLOT_BUDGET rather than overshooting the cap.
 --
---   tiny workload   period pinned at PERIOD_MIN; the cost is negligible either
---                   way, so refresh as promptly as is useful
---   growing         period = work / budget, holding the per-tick cost flat at
---                   SLOT_BUDGET while the base grows
---   large           period pinned at PERIOD_MAX, after which the per-tick cost
---                   necessarily grows with the workload
---
--- The join between the last two is a quadratic Bezier whose control point sits
--- where the two tangents meet, which makes it C1-continuous with the straight
--- line at one end and with the PERIOD_MAX asymptote at the other. Because the
--- x-coordinate of that construction is linear in t, there is no quadratic to
--- solve. Letting the period bend over early is what lets the per-tick budget
--- drift up to 1.5x SLOT_BUDGET (1.14x a third of the way in, 1.29x two thirds)
--- instead of blowing straight through the 5 second cap.
---
--- Note the only real-time quantity in the whole controller is game.speed, and
--- it is map state rather than a measurement, so this stays deterministic and
--- identical on every client. Wall-clock lag is deliberately not consulted: it
--- is unreadable from a mod, and using it would make spoil_tick depend on how
--- fast a given machine is, which desyncs multiplayer.
-local function update_period(work)
-    -- Under a speed mod each tick covers less real time, so spend
-    -- proportionally less per tick and let the fast-forward actually go fast.
-    -- Guarded at 1 so slow motion does not shorten the period and waste CPU.
+-- game.speed is the only real-time quantity involved, and it is map state
+-- rather than a measurement, so this stays identical on every client. Under a
+-- speed mod each tick covers less real time, so spend proportionally less per
+-- tick; guarded at 1 so slow motion does not shorten the period and waste CPU.
+local function global_period()
+    local work = storage.total_work
     local speed = game.speed
     local budget = speed > 1 and SLOT_BUDGET / speed or SLOT_BUDGET
 
@@ -441,642 +379,433 @@ local function update_period(work)
     return PERIOD_MAX * (1 - BEND * remaining * remaining)
 end
 
---- Preserve a platform's hub inventory, up to the capacity its freezing cargo
--- bays provide. The hub is cached on the entry; the old code searched the whole
--- surface for it on every sweep.
--- @return boolean Whether the entry removed itself
-local function preserve_platform(entry, tick)
-    local surface = game.surfaces[entry.surface]
-    local warehouses = storage.PlatformWarehouses[entry.surface]
-    if not (surface and warehouses) then
-        queue_remove(entry.key)
-        return true
-    end
+--- Give an entry its next due tick, and its share of the per-tick budget.
+--
+-- Normally the global period. A full-freeze entry promises its contents do not
+-- spoil, so as its earliest deadline approaches, its period shortens to come
+-- back SAFETY ticks ahead of it - continuously, not as a change of category.
+local function schedule(entry, tick)
+    local period = global_period()
 
-    -- Surviving bays set the capacity, so drop dead ones as we count.
-    for i = #warehouses, 1, -1 do
-        local warehouse = warehouses[i]
-        if not (warehouse and warehouse.valid) then
-            table.remove(warehouses, i)
-        end
+    local deadline = entry.deadline
+    if deadline and entry.full_freeze then
+        local slack = deadline - tick - SAFETY
+        if slack < period then period = slack end
     end
-    if #warehouses == 0 then
-        storage.PlatformWarehouses[entry.surface] = nil
-        queue_remove(entry.key)
-        return true
-    end
+    if period < PERIOD_MIN then period = PERIOD_MIN end
 
-    local hub = entry.entity
-    if not (hub and hub.valid) then
-        hub = surface.find_entities_filtered{ name = "space-platform-hub" }[1]
-        entry.entity = hub
-    end
-
-    local inv = hub and hub.get_inventory(defines.inventory.hub_main)
-    if not inv then
-        entry.last = tick
-        set_work(entry, 1)
-        return false
-    end
-
-    local elapsed = tick - entry.last
-    if elapsed <= 0 then return false end
-    entry.last = tick
-
-    local recover = recovery_for(entry, elapsed)
-    if recover > 0 then
-        local scanned, deadline = preserve_inventory(inv, recover, tick,
-            #warehouses * platform_capacity)
-        set_work(entry, scanned)
-        set_deadline(entry, deadline, tick)
-        -- A hub's walk is already bounded by the bays' capacity, and its slot
-        -- indices shift as cargo pods load and unload, so it always walks.
-        entry.hot = false
-    end
-    return false
+    entry.due = tick + period
+    storage.demand = storage.demand - (entry.rate or 0) + visit_cost(entry) / period
+    entry.rate = visit_cost(entry) / period
+    heap_push(entry.due, entry.key)
 end
 
---- Run one entry's preservation pass.
--- @param hot_only Refresh just the slots near expiry, if that is known to be
---   enough. Falls back to a full walk by itself when the cache is stale.
--- @return boolean Whether the entry removed itself from the queue
-local function preserve_entry(entry, tick, hot_only)
+--- Bring an entry forward to be processed as soon as the budget allows.
+local function expedite(entry, tick)
+    entry.due = tick
+    heap_push(tick, entry.key)
+end
+
+---- Queue membership ----
+
+local function set_work(entry, work)
+    if work < 1 then work = 1 end
+    storage.total_work = storage.total_work + work - entry.work
+    entry.work = work
+end
+
+local function queue_add(entry)
+    if storage.index[entry.key] then return end
+
+    local inv = entry.inventory and entry.entity
+        and entry.entity.get_inventory(entry.inventory)
+    entry.work = inv and #inv or 1
+    entry.last = game.tick
+    entry.rate = 0
+
+    local queue = storage.queue
+    queue[#queue + 1] = entry
+    storage.index[entry.key] = #queue
+    storage.total_work = storage.total_work + entry.work
+    schedule(entry, game.tick)
+end
+
+--- Remove an entry in constant time by swapping the last one into its place.
+-- Anything left for it in the heap is discarded when it surfaces.
+local function queue_remove(key)
+    local position = storage.index[key]
+    if not position then return end
+
+    local queue = storage.queue
+    local last = #queue
+    local entry = queue[position]
+    storage.total_work = storage.total_work - entry.work
+    storage.demand = storage.demand - (entry.rate or 0)
+    storage.index[key] = nil
+
+    if position ~= last then
+        queue[position] = queue[last]
+        storage.index[queue[position].key] = position
+    end
+    queue[last] = nil
+end
+
+---- Processing one entry ----
+
+--- Ticks of spoilage to undo, given how long since this entry's last visit.
+--
+-- Deriving recovery from elapsed time rather than a fixed per-pass constant is
+-- what lets the scheduler visit whenever it has budget: visited after 60 ticks
+-- an entry gets exactly twice the nudge of one visited after 30, so the
+-- effective spoil rate is identical either way. Counting whole freeze_rates
+-- boundaries crossed makes the slowed rate exact without carrying a remainder.
+local function recovery_for(entry, elapsed, tick)
+    if entry.full_freeze then return elapsed end
+    local aged = floor(tick / freeze_rates) - floor((tick - elapsed) / freeze_rates)
+    return elapsed - aged
+end
+
+--- Find what an entry preserves, and how much of it.
+-- @return LuaInventory|nil, number|nil The inventory and any stack cap, or nil
+--   if this entry has nothing to do right now
+local function contents_of(entry)
     local kind = entry.kind
+
     if kind == "platform" then
-        return preserve_platform(entry, tick)
+        -- Surviving bays set the capacity, so drop dead ones as we count. The
+        -- hub is cached; the list is unordered, so swap the last one down.
+        local bays = entry.bays
+        for i = #bays, 1, -1 do
+            if not (bays[i] and bays[i].valid) then
+                bays[i] = bays[#bays]
+                bays[#bays] = nil
+            end
+        end
+        if #bays == 0 then return nil end
+
+        local hub = entry.entity
+        if not (hub and hub.valid) then
+            local surface = game.surfaces[entry.surface]
+            hub = surface and surface.platform and surface.platform.hub
+            entry.entity = hub
+        end
+        if not hub then return nil end
+        return hub.get_inventory(defines.inventory.hub_main),
+               #bays * platform_capacity
     end
 
-    local entity = entry.entity
-    if not (entity and entity.valid) then
-        if entry.proxy and entry.proxy.valid then
+    if kind == "warehouse" and entry.proxy.energy <= WAREHOUSE_ENERGY then
+        return nil  -- unpowered: its contents spoil normally
+    end
+
+    return entry.entity.get_inventory(entry.inventory)
+end
+
+--- Is this entry still real? Cleans up after itself if not.
+local function alive(entry)
+    if entry.kind == "platform" then
+        if entry.bays[1] then return true end
+    else
+        local entity = entry.entity
+        if entity and entity.valid then
+            if entry.kind ~= "warehouse" then return true end
+            local proxy = entry.proxy
+            if proxy and proxy.valid then return true end
+        elseif entry.proxy and entry.proxy.valid then
             entry.proxy.destroy()
         end
-        queue_remove(entry.key)
-        return true
     end
-
-    if kind == "warehouse" then
-        local proxy = entry.proxy
-        if not (proxy and proxy.valid) then
-            queue_remove(entry.key)
-            return true
-        end
-        if proxy.energy <= WAREHOUSE_ENERGY_THRESHOLD then
-            -- Unpowered: items spoil normally. Skip the walk, and just as
-            -- importantly do not bank the elapsed time - a warehouse that lost
-            -- power must not retroactively freeze everything when it returns.
-            entry.last = tick
-            entry.acc = 0
-            -- `work` deliberately left at the full-walk figure. It is the
-            -- scheduler's estimate of what a visit *might* cost, not what this
-            -- one did, and collapsing it to 1 made a base-wide power cut shrink
-            -- total_work to nothing - so when power returned every warehouse
-            -- was charged 1 and walked 500, all on one tick.
-            -- Its contents spoil normally now, so drop it out of the fast lane
-            -- rather than letting a stale deadline keep waking it.
-            set_deadline(entry, nil, tick)
-            entry.hot = nil
-            return false
-        end
-    end
-
-    local elapsed = tick - entry.last
-    if elapsed <= 0 then return false end
-    entry.last = tick
-
-    local recover = recovery_for(entry, elapsed)
-    if recover <= 0 then return false end
-
-    if kind == "inserter" then
-        local held = entity.held_stack
-        if held and held.valid_for_read then
-            set_deadline(entry, preserve_stack(held, recover, tick), tick)
-        end
-        return false
-    end
-
-    local inv = entity.get_inventory(entry.inventory)
-    if not inv then
-        set_work(entry, 1)
-        set_deadline(entry, nil, tick)
-        entry.hot = nil
-        return false
-    end
-
-    if hot_only and entry.hot then
-        local _, deadline = preserve_hot_slots(inv, entry.hot, recover, tick)
-        if deadline then
-            set_deadline(entry, deadline, tick)
-            return false
-        end
-        -- Cache went stale, so fall through and rebuild it from a full walk.
-    end
-
-    local scanned, deadline, hot = preserve_inventory(inv, recover, tick)
-    set_work(entry, scanned)
-    set_deadline(entry, deadline, tick)
-    entry.hot = hot
+    queue_remove(entry.key)
     return false
 end
 
----- Near-expiry fast lane ----
---
--- A full-freeze container promises its contents do not spoil, but the main
--- queue only guarantees a visit once per period, which can be as long as
--- PERIOD_MAX. A stack with less life left than that would spoil while waiting
--- its turn. This lane revisits those containers every PERIOD_MIN ticks instead.
---
--- It is a second queue, not a bypass. Serving every urgent container the
--- instant it qualifies would put the whole urgent set on one tick - the exact
--- shape of stall this scheduler exists to remove, just reached through a
--- different door. A Gleba base buffering nutrients through fifty freezing
--- warehouses is enough to trigger it. So the lane carries its own credit and
--- spreads its work across the same PERIOD_MIN ticks it has to finish within.
+--- Preserve one entry's contents. Returns the slots the visit actually cost.
+local function process(entry, tick)
+    if not alive(entry) then return 0 end
 
---- Rebuild the urgent set. O(n) in integer compares, no API calls, and gated on
--- the tracked lower bound, so in a working freezer it almost never runs.
--- Recomputes that bound exactly while it is here.
---- Work through the watch list, covering it every PERIOD_MIN ticks.
---
--- A continuous round robin: entries join via watch() as passes discover them,
--- and drop out here once their deadline is no longer near. Walking a slice per
--- tick keeps a large watch list from costing a whole-list pass on one tick, the
--- same way the main queue is spread.
---
--- Entries are held by key rather than position because a queue removal swaps
--- the last entry into the freed slot.
-local function urgent_drain(tick)
-    local urgent = storage.urgent
-    local count = #urgent
-    if count == 0 then return end
+    local inv, cap = contents_of(entry)
+    if not inv then
+        -- Nothing to preserve: an unpowered warehouse, a platform without a
+        -- hub. Do not bank the elapsed time - a warehouse that lost power must
+        -- not retroactively freeze everything when it comes back - and forget
+        -- what it held, so nothing stale keeps it looking urgent. `work` keeps
+        -- the full-walk figure: it is what a visit *might* cost, and shrinking
+        -- it would let a base-wide power cut collapse the whole budget.
+        entry.last = tick
+        entry.deadline, entry.hot = nil, nil
+        schedule(entry, tick)
+        return 1
+    end
 
-    -- Ceiling is one tick's grant plus the largest single entry: enough to
-    -- always afford the biggest warehouse in the set even when the grant alone
-    -- would not cover it, but never enough to bank a crowd. Credit carries
-    -- across a wrap - zeroing it starves any entry costing more than one
-    -- cycle's grant, which silently let a whole warehouse spoil once already.
-    local grant = storage.urgent_work / PERIOD_MIN
-    local credit = storage.urgent_credit + grant
-    local ceiling = grant + storage.urgent_largest
-    if credit > ceiling then credit = ceiling end
+    local elapsed = tick - entry.last
+    if elapsed <= 0 then
+        schedule(entry, tick)
+        return 0
+    end
+    entry.last = tick
 
-    local cursor = storage.urgent_cursor
-    local accum = storage.urgent_accum
-    local accum_largest = storage.urgent_accum_largest
-    local slice = math.ceil(count / PERIOD_MIN)
-    local examined = 0
+    local recover = recovery_for(entry, elapsed, tick)
+    if recover <= 0 then
+        schedule(entry, tick)
+        return 0
+    end
 
-    while examined < slice and count > 0 do
-        if cursor > count then
-            -- Wrapped: publish the workload actually observed this cycle.
-            storage.urgent_work = accum
-            storage.urgent_largest = accum_largest
-            accum, accum_largest, cursor = 0, 1, 1
-        end
-
-        local position = storage.index[urgent[cursor]]
-        local entry = position and storage.queue[position]
-
-        if not entry or not entry.deadline
-            or entry.deadline - tick > URGENT_HORIZON then
-            -- Gone, or no longer close enough to be worth watching. Swap the
-            -- last key into this slot and re-examine without advancing.
-            if entry then entry.watched = nil end
-            urgent[cursor] = urgent[count]
-            urgent[count] = nil
-            count = count - 1
-            -- Counts against the slice even though the cursor holds position:
-            -- a base-wide power cut unwatches every warehouse at once, and
-            -- without this the whole list would be cleared on a single tick.
-            examined = examined + 1
+    local cost
+    if entry.hot then
+        local deadline = walk_hot(inv, entry.hot, recover, tick)
+        if deadline then
+            cost = #entry.hot
+            entry.deadline = deadline
         else
-            local cost = urgent_cost(entry)
-            accum = accum + cost
-            if cost > accum_largest then accum_largest = cost end
-
-            -- Serving on urgency rather than on membership is what keeps a
-            -- crowd of merely-nearby deadlines from costing a full refresh
-            -- every cycle: a stack with 150 ticks left is touched about every
-            -- 110 ticks, not every 20, and still never gets within PERIOD_MIN
-            -- of spoiling.
-            if entry.deadline - tick <= URGENT_SERVE_WITHIN
-                and tick - entry.last >= PERIOD_MIN then
-                if cost > credit then break end
-                credit = credit - cost
-                preserve_entry(entry, tick, true)
-            end
-            cursor = cursor + 1
-            examined = examined + 1
+            entry.hot = nil  -- stale; rebuilt by the full walk below
         end
     end
 
-    storage.urgent_cursor = cursor
-    storage.urgent_credit = credit
-    storage.urgent_accum = accum
-    storage.urgent_accum_largest = accum_largest
+    if not cost then
+        local scanned, deadline, hot = walk(inv, recover, tick,
+                                            entry.full_freeze, cap)
+        set_work(entry, scanned)
+        entry.deadline, entry.hot = deadline, hot
+        cost = scanned
+    end
+
+    schedule(entry, tick)
+    return cost
 end
 
---- Main tick handler: drain a slice of the preservation queue.
--- Credit is carried in slots: every tick grants one period's worth of the total
--- workload, and visiting an entry costs the slots it last had to walk. Because
--- the cost is the entry's own slot count, the slice is balanced by real work
--- rather than by container count, and because the grant is derived from the
--- adaptive period the per-tick cost stays near SLOT_BUDGET as a base grows.
--- @param event Event data from Factorio runtime
+--- Preserve an inserter's held stack. One slot, no inventory to resolve.
+local function process_inserter(entry, tick)
+    if not alive(entry) then return 0 end
+
+    local elapsed = tick - entry.last
+    if elapsed > 0 then
+        entry.last = tick
+        local recover = recovery_for(entry, elapsed, tick)
+        local held = entry.entity.held_stack
+        if recover > 0 and held and held.valid_for_read then
+            preserve_stack(held, recover, tick)
+        end
+    end
+    schedule(entry, tick)
+    return 1
+end
+
+---- Tick ----
+
+--- Spend this tick's slot budget on whatever has come due.
+--
+-- The grant is `demand`, the sum of every entry's work divided by its own
+-- period - exactly the rate needed to keep all of them on schedule. Credit is
+-- capped at one grant so an idle stretch cannot buy a burst, and a visit is
+-- billed what it really cost, so an entry that turns out expensive drives the
+-- credit negative and ends the tick rather than overrunning it.
 local function on_tick(event)
     if freeze_rates == 1 then return end
 
-    local queue = storage.queue
-    if #queue == 0 then return end
+    local credit = storage.credit + storage.demand
+    if credit > storage.demand then credit = storage.demand end
+
     local tick = event.tick
+    local dues = storage.heap_due
 
-    urgent_drain(tick)
-
-    local count = #queue
-    if count == 0 then return end
-    local total = storage.total_work
-    if total <= 0 then return end
-
-    -- Never bank more than one full cycle, so an idle stretch cannot buy a
-    -- burst that undoes the whole point of spreading the work out.
-    local credit = storage.work_credit + total / update_period(total)
-    if credit > total then credit = total end
-
-    local cursor = storage.cursor
-    local visited = 0
-
-    while visited < count do
-        if cursor > #queue then cursor = 1 end
-        local entry = queue[cursor]
-        if not entry then break end
-
-        local estimate = entry.work
-        if estimate > credit then break end
-        credit = credit - estimate
-
-        -- A removed entry pulls the last one into this slot, so hold position.
-        if not preserve_entry(entry, tick) then
-            -- The estimate comes from the previous visit and can undershoot
-            -- badly: an unpowered warehouse is recorded as a single slot, and
-            -- the pass after power returns walks five hundred. Charging only
-            -- the estimate let a base-wide power cut collapse total_work, and
-            -- restoring power then walked every warehouse on one tick. Bill the
-            -- difference so a surprise ends the tick instead of landing on it.
-            local actual = entry.work
-            if actual > estimate then
-                credit = credit - (actual - estimate)
+    while credit > 0 and dues[1] and dues[1] <= tick do
+        local key = heap_pop()
+        local entry = entry_for(key)
+        -- Anything rescheduled since it was pushed left a stale pair behind.
+        if entry and entry.due <= tick then
+            if entry.kind == "inserter" then
+                credit = credit - process_inserter(entry, tick)
+            else
+                credit = credit - process(entry, tick)
             end
-            cursor = cursor + 1
         end
-        visited = visited + 1
     end
 
-    storage.cursor = cursor
-    storage.work_credit = credit
+    storage.credit = credit
 end
 
----- Runtime Events ----
+---- Runtime events ----
 
---- Start tracking a platform surface, if it is not tracked already.
-local function register_platform(surface_name)
-    if storage.index["surface:" .. surface_name] then return end
-    queue_add{
-        key = "surface:" .. surface_name,
-        kind = "platform",
-        surface = surface_name,
-        full_freeze = true,
-        work = platform_capacity
+--- Start tracking an entity, creating whatever it needs to work.
+local function track(entity)
+    local spec = TRACKED[entity.name]
+    if not spec then return end
+
+    if spec.kind == "bay" then
+        -- Bays feed the platform hub entry for their surface.
+        local surface_name = entity.surface.name
+        local key = platform_key(surface_name)
+        local entry = entry_for(key)
+        if entry then
+            entry.bays[#entry.bays + 1] = entity
+        else
+            queue_add {
+                key = key,
+                kind = "platform",
+                surface = surface_name,
+                bays = { entity },
+                full_freeze = true,
+            }
+        end
+        return
+    end
+
+    local proxy
+    if spec.kind == "warehouse" then
+        proxy = entity.surface.create_entity {
+            name = PROXY_NAME,
+            position = entity.position,
+            force = entity.force,
+        }
+        if not proxy then return end
+    end
+
+    queue_add {
+        key = entity.unit_number,
+        kind = spec.kind,
+        entity = entity,
+        proxy = proxy,
+        inventory = spec.inventory,
+        full_freeze = spec.full_freeze or false,
     }
 end
 
---- Handle creation of preservation entities
--- Registers newly created entities in the work queue and performs any necessary
--- setup (like creating power proxies for warehouses).
---
--- @function OnEntityCreated
--- @param event Event data containing the created entity
+--- @function OnEntityCreated
+-- on_entity_cloned reports the new entity as `destination`; without it a
+-- cloned freezer was never tracked.
 local function OnEntityCreated(event)
-    -- on_entity_cloned reports the new entity as `destination`; without it a
-    -- cloned freezer was never tracked.
     local entity = event.created_entity or event.entity or event.destination
+    if entity and entity.valid then track(entity) end
+end
+
+--- @function OnEntityRemoved
+local function OnEntityRemoved(event)
+    local entity = event.entity
     if not (entity and entity.valid) then return end
-    local name = entity.name
 
-    if name == WAREHOUSE_NAME then
-        -- Create power proxy for warehouse
-        local proxy = entity.surface.create_entity{
-            name = "warehouse-power-proxy",
-            position = entity.position,
-            force = entity.force
-        }
-        if proxy then
-            queue_add{
-                key = entity.unit_number,
-                kind = "warehouse",
-                entity = entity,
-                proxy = proxy,
-                inventory = defines.inventory.chest,
-                full_freeze = true,
-                work = inventory_slots(entity, defines.inventory.chest)
-            }
+    local spec = TRACKED[entity.name]
+    if not spec then return end
+
+    if spec.kind == "bay" then
+        local entry = entry_for(platform_key(entity.surface.name))
+        if not entry then return end
+        local bays = entry.bays
+        for i = 1, #bays do
+            if bays[i] == entity then
+                bays[i] = bays[#bays]
+                bays[#bays] = nil
+                break
+            end
         end
-
-    elseif IS_PLATFORM[name] then
-        local surface_name = entity.surface.name
-        local warehouses = storage.PlatformWarehouses[surface_name]
-        if not warehouses then
-            warehouses = {}
-            storage.PlatformWarehouses[surface_name] = warehouses
-        end
-        warehouses[#warehouses + 1] = entity
-        register_platform(surface_name)
-
-    elseif IS_FRIDGE[name] then
-        queue_add{
-            key = entity.unit_number,
-            kind = "container",
-            entity = entity,
-            inventory = defines.inventory.chest,
-            full_freeze = false,
-            work = inventory_slots(entity, defines.inventory.chest)
-        }
-
-    elseif name == WAGON_NAME then
-        queue_add{
-            key = entity.unit_number,
-            kind = "container",
-            entity = entity,
-            inventory = defines.inventory.cargo_wagon,
-            full_freeze = false,
-            work = inventory_slots(entity, defines.inventory.cargo_wagon)
-        }
-
-    elseif IS_INSERTER[name] then
-        queue_add{
-            key = entity.unit_number,
-            kind = "inserter",
-            entity = entity,
-            full_freeze = false,
-            work = 1
-        }
+        if #bays == 0 then queue_remove(entry.key) end
+        return
     end
+
+    local entry = entry_for(entity.unit_number)
+    if entry and entry.proxy and entry.proxy.valid then entry.proxy.destroy() end
+    queue_remove(entity.unit_number)
 end
 
 --- Re-check a container a player just moved items in or out of.
 --
 -- Nothing tells a mod that an item entered a chest, so a stack put into a
--- freezer is invisible until that container's next pass - up to PERIOD_MAX
--- ticks away. Drop one in with less life left than that and it spoils inside a
--- working freezer. The watch list cannot help, because it is keyed on the
--- deadline recorded at the last pass, which knows nothing about the new stack.
+-- freezer is invisible until that container's next visit. Drop one in with
+-- less life left than that and it spoils inside a working freezer. Player
+-- transfers are observable though, and rare enough to act on directly: one
+-- player action touches one container, where priming in bulk would hand back
+-- the very stall this scheduler exists to avoid.
 --
--- Player transfers are observable though, and rare enough to act on directly.
--- Marking the entry due-now gets it served within PERIOD_MIN instead of
--- PERIOD_MAX, and clearing `hot` forces that pass to be a full walk, so a stack
--- dropped into any slot is found. The deadline is a placeholder that the walk
--- immediately replaces with the truth.
---
--- `last` is deliberately left alone: recovery is derived from it, so winding it
--- back would hand the container extra preservation it did not earn.
---
--- Priming is safe here in a way it is not for bulk registration - one player
--- action touches one container, where a blueprint drop would mark every freezer
--- urgent at once and hand back the very stall this scheduler exists to remove.
+-- `last` is deliberately untouched - recovery is derived from it, and winding
+-- it back would grant preservation the container did not earn.
 --
 -- @function OnPlayerMovedItems
 local function OnPlayerMovedItems(event)
     local entity = event.entity
     if not (entity and entity.valid and entity.unit_number) then return end
 
-    local position = storage.index[entity.unit_number]
-    local entry = position and storage.queue[position]
+    local entry = entry_for(entity.unit_number)
     if not (entry and entry.full_freeze) then return end
 
-    entry.hot = nil
-    entry.deadline = event.tick
-    watch(entry)
+    entry.hot = nil  -- force a full walk, so a stack in any slot is found
+    expedite(entry, event.tick)
 end
 
---- Handle removal of preservation entities
--- Drops the entity from the work queue and performs any necessary cleanup
--- (like destroying power proxies for warehouses).
---
--- @function OnEntityRemoved
--- @param event Event data containing the removed entity
-local function OnEntityRemoved(event)
-    local entity = event.entity
-    if not (entity and entity.valid) then return end
-    local name = entity.name
+---- Initialisation ----
 
-    if IS_PLATFORM[name] then
-        local surface_name = entity.surface.name
-        local warehouses = storage.PlatformWarehouses[surface_name]
-        if warehouses then
-            for i = #warehouses, 1, -1 do
-                if warehouses[i] == entity then
-                    table.remove(warehouses, i)
-                    break
-                end
-            end
-            if #warehouses == 0 then
-                storage.PlatformWarehouses[surface_name] = nil
-                queue_remove("surface:" .. surface_name)
-            end
-        end
-        return
-    end
-
-    if name == WAREHOUSE_NAME then
-        local position = storage.index[entity.unit_number]
-        local entry = position and storage.queue[position]
-        if entry and entry.proxy and entry.proxy.valid then
-            entry.proxy.destroy()
-        end
-    end
-    queue_remove(entity.unit_number)
-end
-
----- Initialization Functions ----
-
---- Initialize or update mod settings
--- @function init_settings
 local function init_settings()
     freeze_rates = settings.global["fridge-freeze-rate"].value
 end
 
---- Find and register all preservation entities across all surfaces
--- Rebuilds the work queue from scratch by scanning every surface. Also cleans
--- up old power proxies and creates fresh ones.
---
--- @function init_entities
+--- Rebuild the queue from scratch by scanning every surface.
 local function init_entities()
-    storage.queue = {}
-    storage.index = {}
-    storage.cursor = 1
-    storage.total_work = 0
-    storage.work_credit = 0
-    storage.urgent = {}
-    storage.urgent_work = 0
-    storage.urgent_largest = 1
-    storage.urgent_cursor = 1
-    storage.urgent_credit = 0
-    storage.urgent_accum = 0
-    storage.urgent_accum_largest = 1
-    storage.PlatformWarehouses = {}
+    reset_state()
 
-    local fridge_names = existing_names(FRIDGE_NAMES)
-    local inserter_names = existing_names(INSERTER_NAMES)
-    local platform_names = existing_names(PLATFORM_NAMES)
+    local names = tracked_names()
+    if #names == 0 then return end
 
     for _, surface in pairs(game.surfaces) do
-        -- Clean up old power proxies first
-        for _, proxy in pairs(surface.find_entities_filtered{ name = "warehouse-power-proxy" }) do
+        -- Proxies are recreated with their warehouses, so clear the old ones.
+        for _, proxy in pairs(surface.find_entities_filtered { name = PROXY_NAME }) do
             proxy.destroy()
         end
-
-        -- An empty name list would make find_entities_filtered match everything,
-        -- so every scan below is guarded on having something to look for.
-        if #fridge_names > 0 then
-            for _, fridge in pairs(surface.find_entities_filtered{ name = fridge_names }) do
-                queue_add{
-                    key = fridge.unit_number,
-                    kind = "container",
-                    entity = fridge,
-                    inventory = defines.inventory.chest,
-                    full_freeze = false,
-                    work = inventory_slots(fridge, defines.inventory.chest)
-                }
-            end
-        end
-
-        if #inserter_names > 0 then
-            for _, inserter in pairs(surface.find_entities_filtered{ name = inserter_names }) do
-                queue_add{
-                    key = inserter.unit_number,
-                    kind = "inserter",
-                    entity = inserter,
-                    full_freeze = false,
-                    work = 1
-                }
-            end
-        end
-
-        for _, warehouse in pairs(surface.find_entities_filtered{ name = WAREHOUSE_NAME }) do
-            local proxy = surface.create_entity{
-                name = "warehouse-power-proxy",
-                position = warehouse.position,
-                force = warehouse.force
-            }
-            if proxy then
-                queue_add{
-                    key = warehouse.unit_number,
-                    kind = "warehouse",
-                    entity = warehouse,
-                    proxy = proxy,
-                    inventory = defines.inventory.chest,
-                    full_freeze = true,
-                    work = inventory_slots(warehouse, defines.inventory.chest)
-                }
-            end
-        end
-
-        for _, wagon in pairs(surface.find_entities_filtered{ name = WAGON_NAME }) do
-            queue_add{
-                key = wagon.unit_number,
-                kind = "container",
-                entity = wagon,
-                inventory = defines.inventory.cargo_wagon,
-                full_freeze = false,
-                work = inventory_slots(wagon, defines.inventory.cargo_wagon)
-            }
-        end
-
-        -- Freezing cargo bays and unloading bays share one budget per platform.
-        if #platform_names > 0 then
-            local bays = surface.find_entities_filtered{ name = platform_names }
-            if #bays > 0 then
-                storage.PlatformWarehouses[surface.name] = bays
-                register_platform(surface.name)
-            end
+        for _, entity in pairs(surface.find_entities_filtered { name = names }) do
+            track(entity)
         end
     end
 end
 
----- Event Registration ----
-
---- Register all event handlers for preservation entities
--- @function init_events
 local function init_events()
-    init_caches()
+    init_cache()
 
-    -- Only filter on prototypes that exist, so the same registration works with
-    -- and without Space Age and on both 2.0 and 2.1.
-    local tracked = { WAREHOUSE_NAME, WAGON_NAME }
-    for _, names in pairs({ FRIDGE_NAMES, INSERTER_NAMES, PLATFORM_NAMES }) do
-        for _, name in pairs(names) do
-            tracked[#tracked + 1] = name
-        end
+    local filter = {}
+    for _, name in pairs(tracked_names()) do
+        filter[#filter + 1] = { filter = "name", name = name }
     end
 
-    local entity_filter = {}
-    for _, name in pairs(existing_names(tracked)) do
-        entity_filter[#entity_filter + 1] = { filter = "name", name = name }
+    for _, event in pairs {
+        defines.events.on_built_entity,                 -- player built
+        defines.events.on_entity_cloned,                -- copied
+        defines.events.on_robot_built_entity,           -- robot built
+        defines.events.on_space_platform_built_entity,  -- space platform
+        defines.events.script_raised_built,             -- script created
+        defines.events.script_raised_revive,            -- revived
+    } do
+        script.on_event(event, OnEntityCreated, filter)
     end
 
-    -- Register entity creation events
-    local creation_events = {
-        defines.events.on_built_entity,               -- Player built
-        defines.events.on_entity_cloned,              -- Entity copied
-        defines.events.on_robot_built_entity,         -- Robot built
-        defines.events.on_space_platform_built_entity,-- Space platform
-        defines.events.script_raised_built,           -- Script created
-        defines.events.script_raised_revive           -- Entity revived
-    }
-    for _, event in pairs(creation_events) do
-        script.on_event(event, OnEntityCreated, entity_filter)
+    for _, event in pairs {
+        defines.events.on_player_mined_entity,          -- player removed
+        defines.events.on_robot_mined_entity,           -- robot removed
+        defines.events.on_space_platform_mined_entity,  -- space platform
+        defines.events.on_entity_died,                  -- destroyed
+        defines.events.script_raised_destroy,           -- script removed
+    } do
+        script.on_event(event, OnEntityRemoved, filter)
     end
 
-    -- Register entity removal events
-    local removal_events = {
-        defines.events.on_player_mined_entity,         -- Player removed
-        defines.events.on_robot_mined_entity,          -- Robot removed
-        defines.events.on_space_platform_mined_entity, -- Space platform
-        defines.events.on_entity_died,                 -- Entity destroyed
-        defines.events.script_raised_destroy           -- Script removed
-    }
-    for _, event in pairs(removal_events) do
-        script.on_event(event, OnEntityRemoved, entity_filter)
-    end
-
-    -- Player item movement: the only insertions into a container this mod can
-    -- observe at all. Unfiltered because both events carry an arbitrary entity;
-    -- the handler drops anything it is not already tracking in two lookups.
+    -- The only item movement into a container a mod can observe. Unfiltered
+    -- because both carry an arbitrary entity; the handler drops anything it is
+    -- not already tracking in one lookup.
     script.on_event(defines.events.on_player_fast_transferred, OnPlayerMovedItems)
     script.on_event(defines.events.on_gui_closed, OnPlayerMovedItems)
 
-    -- Register update events
     script.on_event(defines.events.on_tick, on_tick)
     script.on_event(defines.events.on_runtime_mod_setting_changed, init_settings)
 end
 
----- Script Lifecycle Handlers ----
+---- Lifecycle ----
 
--- Handle mod loading (called when save is loaded)
-script.on_load(function()
-    init_events()
-end)
+script.on_load(init_events)
 
--- Handle initial mod setup (called when mod is first added to save)
 script.on_init(function()
-    init_storages()
+    init_state()
     init_events()
     init_entities()
 end)
 
--- Handle mod configuration changes
-script.on_configuration_changed(function(data)
+script.on_configuration_changed(function()
     init_settings()
-    init_storages()
+    init_state()
     init_events()
     init_entities()
 end)
