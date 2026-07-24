@@ -29,11 +29,31 @@ data:extend({
     {
         type = "int-setting",
         name = "fridge-freeze-rate",
-        setting_type = "runtime-global", 
+        setting_type = "runtime-global",
         default_value = 20,
-        minimum_value = 1, 
+        minimum_value = 1,
         maximum_value = 100,
         order = "c"
+    },
+    {
+        -- Inventory slots the mod aims to process per tick.
+        type = "int-setting",
+        name = "fridge-slot-budget",
+        setting_type = "runtime-global",
+        default_value = 200,
+        minimum_value = 20,
+        maximum_value = 4000,
+        order = "c-perf-a"
+    },
+    {
+        -- Longest gap between two passes over the same container, in ticks.
+        type = "int-setting",
+        name = "fridge-max-refresh-gap",
+        setting_type = "runtime-global",
+        default_value = 300,
+        minimum_value = 60,
+        maximum_value = 900,
+        order = "c-perf-b"
     },
     {
         type = "double-setting", 

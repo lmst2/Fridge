@@ -25,11 +25,14 @@
 -- granularity/UPS knob: it can move freely between ticks without changing how
 -- fast anything spoils.
 local PERIOD_MIN = 20    -- fastest refresh, for small bases
-local PERIOD_MAX = 300   -- slowest refresh: 5 seconds of game time
+-- Slowest refresh, from the "Longest refresh gap" setting (default 300 = 5 s).
+local PERIOD_MAX = settings.global["fridge-max-refresh-gap"].value
+if PERIOD_MAX < PERIOD_MIN then PERIOD_MAX = PERIOD_MIN end
 
--- Slots per tick the mod aims to spend once it is past the trivial range.
--- At roughly 4.5 us per slot this is about 0.9 ms of a 16.67 ms tick.
-local SLOT_BUDGET = 200
+-- Slots per tick the mod aims to spend once it is past the trivial range, from
+-- the "Preservation budget per tick" setting. At roughly 4.5 us per slot the
+-- default 200 is about 0.9 ms of a 16.67 ms tick.
+local SLOT_BUDGET = settings.global["fridge-slot-budget"].value
 
 -- Half-width of the Bezier fillet, as a fraction of the workload at which the
 -- flat-budget line would hit PERIOD_MAX. 0.5 lets the per-tick budget drift to
@@ -1029,6 +1032,12 @@ end
 -- @function init_settings
 local function init_settings()
     freeze_rates = settings.global["fridge-freeze-rate"].value
+    SLOT_BUDGET = settings.global["fridge-slot-budget"].value
+    PERIOD_MAX = settings.global["fridge-max-refresh-gap"].value
+    if PERIOD_MAX < PERIOD_MIN then PERIOD_MAX = PERIOD_MIN end
+    -- Keep the values derived from them in step.
+    URGENT_HORIZON = PERIOD_MAX + 3 * PERIOD_MIN
+    WARMUP_BUDGET = 3 * SLOT_BUDGET
 end
 
 --- Find and register all preservation entities across all surfaces
