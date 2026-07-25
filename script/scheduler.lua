@@ -26,8 +26,7 @@
 --   last         tick this entry was last processed
 --   due          tick it should next be processed
 --   rate         its share of the per-tick slot budget, work/period
---   deadline     earliest tick its contents spoil (full-freeze entries only)
---   seen         its contents have been read at least once (deadline is real)
+--   deadline     earliest tick anything it holds spoils
 --   count        item total at the last walk, for the large-factory skip
 -- }
 --
@@ -166,6 +165,16 @@ function scheduler.global_period()
     return period_max * (1 - config.BEND * remaining * remaining)
 end
 
+--- Set an entry's next due tick from an explicit period, keeping the
+-- demand invariant: `demand` is always the sum of every entry's rate. Every
+-- path that assigns a due goes through here, so no path can corrupt the grant.
+local function schedule_at(entry, tick, period)
+    entry.due = tick + period
+    storage.demand = storage.demand - (entry.rate or 0) + entry.work / period
+    entry.rate = entry.work / period
+    heap_push(entry.due, entry.key)
+end
+
 --- Give an entry its next due tick, and its share of the per-tick budget.
 --
 -- Normally the global period. As an entry's earliest deadline approaches, its
@@ -174,38 +183,25 @@ end
 -- time to keep its no-spoil promise; a refrigerator or wagon in time to apply
 -- the slowdown a dying item is owed, so it dies on the slowed schedule instead
 -- of the raw one; an inserter in time to preserve a blocked hand.
---
--- A full-freeze entry that has never been read is treated as if it might be
--- urgent: it is checked within PERIOD_MIN so its real deadline is learned
--- before anything short-lived inside it can spoil. Without this, an entry
--- registered into a large factory inherited that factory's long global period
--- and its first look could come hundreds of ticks late - long enough for a
--- freshly stocked freezer of nearly-spoiled goods to rot before it was ever
--- examined. Because such entries take a short period, the herd from a rebuild
--- raises `demand` and is cleared in a handful of ticks, then settles.
 function scheduler.schedule(entry, tick)
     local period_min = config.PERIOD_MIN
-    local period
-    if entry.full_freeze and not entry.seen then
-        period = period_min
-    else
-        period = scheduler.global_period()
-        local deadline = entry.deadline
-        if deadline then
-            local slack = deadline - tick - config.SAFETY
-            if slack < period then period = slack end
-        end
-        if period < period_min then period = period_min end
+    local period = scheduler.global_period()
+    local deadline = entry.deadline
+    if deadline then
+        local slack = deadline - tick - config.SAFETY
+        if slack < period then period = slack end
     end
+    if period < period_min then period = period_min end
 
-    entry.due = tick + period
-    storage.demand = storage.demand - (entry.rate or 0) + entry.work / period
-    entry.rate = entry.work / period
-    heap_push(entry.due, entry.key)
+    schedule_at(entry, tick, period)
 end
 
 --- Bring an entry forward to be processed as soon as the budget allows.
+-- Already-pending entries are left alone, so storms of expedites - GUI
+-- open/close spam, a row of bays built in one paste - cannot flood the heap
+-- with duplicate pairs. `last` is never touched: recovery derives from it.
 function scheduler.expedite(entry, tick)
+    if entry.due <= tick then return end
     entry.due = tick
     heap_push(tick, entry.key)
 end
@@ -218,6 +214,11 @@ function scheduler.set_work(entry, work)
     entry.work = work
 end
 
+-- Work that arrived on the current tick, for spreading bulk arrivals. Module
+-- state, not storage: it is rebuilt identically on every client from the same
+-- deterministic event stream, and never needs to survive a tick boundary.
+local arrivals_tick, arrivals_work = -1, 0
+
 function scheduler.queue_add(entry)
     if storage.index[entry.key] then return end
 
@@ -229,7 +230,25 @@ function scheduler.queue_add(entry)
     queue[#queue + 1] = entry
     storage.index[entry.key] = #queue
     storage.total_work = storage.total_work + entry.work
-    scheduler.schedule(entry, game.tick)
+
+    -- First visit within PERIOD_MIN, so a freshly stocked container's real
+    -- deadline is learned before anything short-lived inside it can spoil -
+    -- inheriting a large factory's long global period here could let a
+    -- freezer-load of nearly-spoiled goods rot before it was ever examined.
+    --
+    -- Everything that arrives on one tick shares a cursor and each entry is
+    -- pushed back by the work queued before it, so any bulk arrival - a
+    -- blueprint paste, a script spawning a base, the rebuild after a mod
+    -- update - drains at about twice SLOT_BUDGET per tick instead of herding
+    -- onto one due tick. A single build adds nearly nothing to the cursor and
+    -- keeps the prompt first look.
+    local now = game.tick
+    if arrivals_tick ~= now then
+        arrivals_tick, arrivals_work = now, 0
+    end
+    arrivals_work = arrivals_work + entry.work
+    local stagger = floor(arrivals_work / (2 * config.SLOT_BUDGET))
+    schedule_at(entry, now, config.PERIOD_MIN + stagger)
 end
 
 --- Remove an entry in constant time by swapping the last one into its place.

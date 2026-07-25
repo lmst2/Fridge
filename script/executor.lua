@@ -329,7 +329,7 @@ local function process(entry, tick)
                                    recover, tick, cap)
     scheduler.set_work(entry, scanned)
     entry.deadline = deadline
-    entry.seen = true
+    entry.seen = nil  -- retired flag; clear it out of older saves
     if config.skip_unchanged then entry.count = inv.get_item_count() end
 
     scheduler.schedule(entry, tick)
