@@ -196,13 +196,12 @@ end
 -- entries and are allowed to spoil, so they skip it.
 --
 -- @param from,to Slot range this entry owns (a large inventory is split)
--- @param cap Optional limit on how many stacks are preserved
 -- @return number Slots examined - the visit's real cost
 -- @return number|nil Earliest tick anything in range spoils
-local function walk(inv, from, to, recover, tick, track, cap)
+local function walk(inv, from, to, recover, tick, track)
     if inv.is_empty() then return 1 end
 
-    local scanned, preserved = to - from + 1, 0
+    local scanned = to - from + 1
     local deadline
 
     -- The body of preserve_stack, inlined. A Lua call per slot measured at 39%
@@ -237,15 +236,8 @@ local function walk(inv, from, to, recover, tick, track, cap)
                     spoils_at = nil
                 end
             end
-            if spoils_at then
-                if track and (not deadline or spoils_at < deadline) then
-                    deadline = spoils_at
-                end
-                preserved = preserved + 1
-                if cap and preserved >= cap then
-                    scanned = i - from + 1
-                    break
-                end
+            if spoils_at and track and (not deadline or spoils_at < deadline) then
+                deadline = spoils_at
             end
         end
     end
@@ -255,12 +247,12 @@ end
 ---- Entries ----
 --
 -- entry = {
---   key          unit_number, or "surface:<name>" for a platform hub
+--   key          unit_number or "surface:<name>", plus "#<chunk>" for a split
 --   kind         "container" | "warehouse" | "inserter" | "platform"
 --   entity       the container, inserter or hub
 --   proxy        power proxy (warehouse only)
---   bays         freezing cargo bays granting capacity (platform only)
---   surface      surface name (platform only)
+--   surface      surface name (platform only); the surface's freezing bays
+--                live in storage.platform_bays, shared by all its chunks
 --   inventory    defines.inventory.* to walk
 --   from,to      slot range this entry owns (a large inventory is split)
 --   full_freeze  stop spoilage rather than slow it
@@ -273,8 +265,11 @@ end
 --   count        item total at the last walk, for the large-factory skip
 -- }
 
-local function platform_key(surface_name)
-    return "surface:" .. surface_name
+--- Key for one slot range of a platform hub. Chunk 0 keeps the bare
+-- "surface:<name>", so a platform small enough not to split is unchanged.
+local function platform_key(surface_name, chunk)
+    local base = "surface:" .. surface_name
+    return chunk == 0 and base or (base .. "#" .. chunk)
 end
 
 --- Key for one slot range of an entity. Chunk 0 keeps the bare unit_number, so
@@ -299,12 +294,22 @@ local function chunk_keys(unit_number)
     return keys
 end
 
+--- Every platform-hub key on a surface, by the same contiguous-chunk walk.
+local function platform_chunk_keys(surface_name)
+    local keys = {}
+    while storage.index[platform_key(surface_name, #keys)] do
+        keys[#keys + 1] = platform_key(surface_name, #keys)
+    end
+    return keys
+end
+
 local function default_state()
     return {
         queue = {},       -- array of entries
         index = {},       -- key -> position in queue
         heap_due = {},    -- min-heap of due ticks...
         heap_key = {},    -- ...and the key each belongs to
+        platform_bays = {}, -- surface name -> its live freezing/unloading bays
         total_work = 0,   -- sum of entry.work, drives the global period
         demand = 0,       -- sum of entry.rate, the per-tick slot grant
         credit = 0,       -- slots banked towards the next visit
@@ -491,23 +496,27 @@ local function recovery_for(entry, elapsed, tick)
     return elapsed - aged
 end
 
---- Find what an entry preserves, and how much of it.
--- @return LuaInventory|nil, number|nil The inventory and any stack cap, or nil
---   if this entry has nothing to do right now
+--- Find the inventory an entry preserves.
+-- @return LuaInventory|nil The inventory to walk, or nil if this entry has
+--   nothing to do right now
 local function contents_of(entry)
     local kind = entry.kind
 
     if kind == "platform" then
-        -- Surviving bays set the capacity, so drop dead ones as we count. The
-        -- hub is cached; the list is unordered, so swap the last one down.
-        local bays = entry.bays
-        for i = #bays, 1, -1 do
-            if not (bays[i] and bays[i].valid) then
-                bays[i] = bays[#bays]
-                bays[#bays] = nil
+        -- Surviving bays keep the surface tracked, so drop dead ones as we
+        -- pass. The list is shared by every chunk of the surface and unordered,
+        -- so swap the last one down; re-splitting to a changed count is the
+        -- build/remove handlers' job, not this read's.
+        local bays = storage.platform_bays[entry.surface]
+        if bays then
+            for i = #bays, 1, -1 do
+                if not (bays[i] and bays[i].valid) then
+                    bays[i] = bays[#bays]
+                    bays[#bays] = nil
+                end
             end
         end
-        if #bays == 0 then return nil end
+        if not bays or #bays == 0 then return nil end
 
         local hub = entry.entity
         if not (hub and hub.valid) then
@@ -516,8 +525,9 @@ local function contents_of(entry)
             entry.entity = hub
         end
         if not hub then return nil end
-        return hub.get_inventory(defines.inventory.hub_main),
-               #bays * platform_capacity
+        -- The chunk's own from/to bounds the walk to this surface's freezing
+        -- budget, so there is no stack cap to return.
+        return hub.get_inventory(defines.inventory.hub_main)
     end
 
     if kind == "warehouse" and entry.proxy.energy <= WAREHOUSE_ENERGY then
@@ -530,7 +540,8 @@ end
 --- Is this entry still real? Cleans up after itself if not.
 local function alive(entry)
     if entry.kind == "platform" then
-        if entry.bays[1] then return true end
+        local bays = storage.platform_bays[entry.surface]
+        if bays and bays[1] then return true end
     else
         local entity = entry.entity
         if entity and entity.valid then
@@ -549,7 +560,7 @@ end
 local function process(entry, tick)
     if not alive(entry) then return 0 end
 
-    local inv, cap = contents_of(entry)
+    local inv = contents_of(entry)
     if not inv then
         -- Nothing to preserve: an unpowered warehouse, a platform without a
         -- hub. Do not bank the elapsed time - a warehouse that lost power must
@@ -559,6 +570,21 @@ local function process(entry, tick)
         -- it would let a base-wide power cut collapse the whole budget.
         entry.last = tick
         entry.deadline, entry.count = nil, nil
+        schedule(entry, tick)
+        return 1
+    end
+
+    -- Clamp the entry's range to the real inventory. A platform hub can be
+    -- smaller than the freezing budget its bays promise - capacity the cargo
+    -- has not filled yet - so a chunk may fall wholly past the end; it has
+    -- nothing to do now but keeps its work reservation for when it fills, and
+    -- forgets any stale deadline so it does not churn as urgent meanwhile.
+    -- Ordinary containers never trip this: their ranges were clamped to real
+    -- slots when they were split.
+    local from, to = entry.from or 1, entry.to or #inv
+    if to > #inv then to = #inv end
+    if from > to then
+        entry.deadline = nil
         schedule(entry, tick)
         return 1
     end
@@ -602,8 +628,7 @@ local function process(entry, tick)
         return 0
     end
 
-    local scanned, deadline = walk(inv, entry.from or 1, entry.to or #inv,
-                                   recover, tick, entry.full_freeze, cap)
+    local scanned, deadline = walk(inv, from, to, recover, tick, entry.full_freeze)
     set_work(entry, scanned)
     entry.deadline = deadline
     entry.seen = true
@@ -679,27 +704,59 @@ end
 
 ---- Runtime events ----
 
+--- (Re)build a surface's platform-hub entries to match its current bay count.
+--
+-- Each freezing/unloading bay adds platform_capacity slots to the hub, so the
+-- combined budget is that times the bay count, and always sits inside the hub.
+-- That budget is split into MAX_ENTRY_SLOTS ranges - one queue entry each, like
+-- any large container - so a platform with many bays is spread across ticks
+-- instead of walked whole. Called whenever a bay is built or removed: placing
+-- one raises the scheduler's total workload by that bay's slots and re-splits
+-- at once, rather than the workload lagging until the next walk; removing the
+-- last bay clears the surface.
+local function register_platform(surface_name)
+    for _, key in pairs(platform_chunk_keys(surface_name)) do
+        queue_remove(key)
+    end
+
+    local bays = storage.platform_bays[surface_name]
+    if not bays or #bays == 0 then
+        storage.platform_bays[surface_name] = nil
+        return
+    end
+
+    local budget = #bays * platform_capacity
+    for chunk = 0, floor((budget - 1) / MAX_ENTRY_SLOTS) do
+        local from = chunk * MAX_ENTRY_SLOTS + 1
+        local to = from + MAX_ENTRY_SLOTS - 1
+        queue_add {
+            key = platform_key(surface_name, chunk),
+            kind = "platform",
+            surface = surface_name,
+            full_freeze = true,
+            from = from,
+            to = to < budget and to or budget,
+        }
+    end
+end
+
 --- Start tracking an entity, creating whatever it needs to work.
 local function track(entity)
     local spec = TRACKED[entity.name]
     if not spec then return end
 
     if spec.kind == "bay" then
-        -- Bays feed the platform hub entry for their surface.
+        -- Bays grant the platform hub its freezing capacity. Record this one on
+        -- the surface, then re-split so the hub is chunked to the new budget and
+        -- the scheduler sees the added workload immediately.
         local surface_name = entity.surface.name
-        local key = platform_key(surface_name)
-        local entry = entry_for(key)
-        if entry then
-            entry.bays[#entry.bays + 1] = entity
-        else
-            queue_add {
-                key = key,
-                kind = "platform",
-                surface = surface_name,
-                bays = { entity },
-                full_freeze = true,
-            }
+        local bays = storage.platform_bays[surface_name]
+        if not bays then
+            bays = {}
+            storage.platform_bays[surface_name] = bays
         end
+        bays[#bays + 1] = entity
+        register_platform(surface_name)
         return
     end
 
@@ -760,9 +817,9 @@ local function OnEntityRemoved(event)
     if not spec then return end
 
     if spec.kind == "bay" then
-        local entry = entry_for(platform_key(entity.surface.name))
-        if not entry then return end
-        local bays = entry.bays
+        local surface_name = entity.surface.name
+        local bays = storage.platform_bays[surface_name]
+        if not bays then return end
         for i = 1, #bays do
             if bays[i] == entity then
                 bays[i] = bays[#bays]
@@ -770,7 +827,9 @@ local function OnEntityRemoved(event)
                 break
             end
         end
-        if #bays == 0 then queue_remove(entry.key) end
+        -- One fewer bay: re-split to the smaller budget (clearing the surface's
+        -- entries when that was the last one).
+        register_platform(surface_name)
         return
     end
 
