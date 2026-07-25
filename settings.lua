@@ -66,6 +66,18 @@ data:extend({
         order = "c[perf]-c"
     },
     {
+        -- How quickly machine-fed insertions are noticed, in ticks. Only
+        -- consulted when a mod adds items that spoil faster than the normal
+        -- refresh rhythm can guarantee; see the locale description.
+        type = "int-setting",
+        name = "fridge-reaction-window",
+        setting_type = "runtime-global",
+        default_value = 30,
+        minimum_value = 10,
+        maximum_value = 600,
+        order = "c[perf]-d"
+    },
+    {
         type = "double-setting",
         name = "fridge-power-consumption",
         setting_type = "startup",

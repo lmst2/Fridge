@@ -51,6 +51,44 @@ config.SAFETY = 3 * config.PERIOD_MIN
 
 ---- Settings snapshot ----
 
+--- Derive the guarantee bounds from the shortest spoil life in this game.
+--
+-- An item that enters a container with at least half its life left must be
+-- found while `SAFETY + PERIOD_MIN` ticks still remain, after which deadline
+-- scheduling carries it. That makes `min_spoil/2 - SAFETY - PERIOD_MIN` the
+-- widest discovery window the promise tolerates. With vanilla items it dwarfs
+-- every refresh period, so the ordinary rhythm already guarantees discovery
+-- and probing would be pure waste: `probes_on` stays false and nothing new
+-- runs. Only when a mod adds items short-lived enough to break the inequality
+-- do count probes activate, and bulk-arrival staggering is clamped to the same
+-- window. Items entering with less than `PERIOD_MIN + queue latency` of life
+-- are beyond any polling design; that floor is documented, not defended.
+local function derive()
+    local min_spoil = config.min_spoil
+    if not min_spoil then
+        config.discovery_window = nil
+        config.probes_on = false
+        config.STAGGER_MAX = math.huge
+        config.reaction_window = config.PERIOD_MIN
+        return
+    end
+
+    local window = math.floor(min_spoil / 2) - config.SAFETY - config.PERIOD_MIN
+    if window < config.PERIOD_MIN then window = config.PERIOD_MIN end
+    config.discovery_window = window
+    config.probes_on = config.PERIOD_MAX > window
+    config.STAGGER_MAX = window
+    local reaction = settings.global["fridge-reaction-window"].value
+    config.reaction_window = reaction < window and reaction or window
+end
+
+--- Record the shortest spoil life among this game's item prototypes,
+-- quality-adjusted. Called from the executor's prototype scan on every load.
+function config.set_min_spoil(min_spoil)
+    config.min_spoil = min_spoil
+    derive()
+end
+
 --- Re-read every setting this mod consults. Cheap enough to run on any
 -- on_runtime_mod_setting_changed without filtering; startup settings cannot
 -- change within a load but re-reading them is harmless.
@@ -69,6 +107,8 @@ function config.refresh()
     -- default; the setting description spells out the trade. See executor.
     config.skip_unchanged =
         settings.startup["fridge-large-factory-optimization"].value
+
+    derive()
 end
 
 config.refresh()

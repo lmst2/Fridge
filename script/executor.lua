@@ -61,20 +61,39 @@ end
 -- get_spoil_ticks() per stack was the largest cost in the original sweep.
 local spoil_ticks = {}
 local quality_changes_spoil = false
+local spoilable = {}   -- name -> boolean, for the probes' contents filter
 
 function executor.init_cache()
     spoil_ticks = {}
     stack_handles = {}
+    spoilable = {}
     -- Vanilla qualities leave spoil time alone, so the cache can be keyed by
     -- item name and the stack's quality never read. A mod that does change it
     -- forces the slower, fully correct path.
-    local ok, changed = pcall(function()
+    local worst_quality = 1
+    local quality_varies = false
+    local ok = pcall(function()
         for _, quality in pairs(prototypes.quality) do
-            if quality.spoil_ticks_multiplier ~= 1 then return true end
+            local multiplier = quality.spoil_ticks_multiplier
+            if multiplier < worst_quality then worst_quality = multiplier end
+            if multiplier ~= 1 then quality_varies = true end
         end
-        return false
     end)
-    quality_changes_spoil = (not ok) or changed
+    quality_changes_spoil = (not ok) or quality_varies
+
+    -- The shortest spoil life in this game, quality-adjusted: the number the
+    -- config derives the discovery guarantee from. nil when nothing spoils.
+    local min_spoil
+    for _, proto in pairs(prototypes.item) do
+        local ticks = proto.get_spoil_ticks()
+        if ticks > 0 and (not min_spoil or ticks < min_spoil) then
+            min_spoil = ticks
+        end
+    end
+    if min_spoil and worst_quality < 1 then
+        min_spoil = floor(min_spoil * worst_quality)
+    end
+    config.set_min_spoil(min_spoil)
 end
 
 ---- Preserving stacks ----
@@ -357,10 +376,85 @@ local function process_inserter(entry, tick)
     return 1
 end
 
+--- One cheap question per entity: has anything new arrived since last look?
+--
+-- Probes exist only when a mod's items spoil too fast for the ordinary
+-- refresh rhythm to promise discovery (config.probes_on). A count that went
+-- UP means something was inserted by an inserter, robot or script - the paths
+-- no event covers - so the entity's walk entries are pulled forward to learn
+-- the newcomer's deadline. Removals cannot create spoilage risk and do not
+-- fire. The probe owns its baseline and refreshes it on every look, fired or
+-- not, so steady feeding cannot re-trigger it forever.
+local function process_probe(entry, tick)
+    local count
+
+    if entry.surface then
+        -- The platform hub: plates and ore churn through it constantly, so a
+        -- raw count would fire every window. One get_contents call instead,
+        -- summing only names that can spoil.
+        local target = scheduler.entry_for(scheduler.platform_key(entry.surface))
+        if not target then
+            scheduler.queue_remove(entry.key)
+            return 1
+        end
+        local inv = contents_of(target)
+        if inv then
+            count = 0
+            local contents = inv.get_contents()
+            for i = 1, #contents do
+                local item = contents[i]
+                local name = item.name
+                local can_spoil = spoilable[name]
+                if can_spoil == nil then
+                    can_spoil = prototypes.item[name].get_spoil_ticks() > 0
+                    spoilable[name] = can_spoil
+                end
+                if can_spoil then count = count + item.count end
+            end
+        end
+    else
+        local entity = entry.entity
+        if not (entity and entity.valid) then
+            scheduler.queue_remove(entry.key)
+            return 1
+        end
+        count = entity.get_inventory(entry.inventory).get_item_count()
+    end
+
+    if count and entry.baseline and count > entry.baseline then
+        if entry.surface then
+            local target = scheduler.entry_for(scheduler.platform_key(entry.surface))
+            if target then
+                target.count = nil
+                scheduler.expedite(target, tick)
+            end
+        else
+            -- Every chunk, staggered a tick apart: the newcomer could sit in
+            -- any slot, and the merge that absorbed it could have shifted any
+            -- stack's spoil time. Chunks already due sooner are left alone.
+            local keys = scheduler.chunk_keys(entry.uid)
+            for i = 1, #keys do
+                local chunk = scheduler.entry_for(keys[i])
+                if chunk then
+                    chunk.count = nil
+                    scheduler.expedite(chunk, tick + i - 1)
+                end
+            end
+        end
+    end
+    entry.baseline = count
+
+    scheduler.schedule_probe(entry, tick)
+    return 1
+end
+
 --- Visit one due entry, whatever its kind. The scheduler's tick callback.
 function executor.process_entry(entry, tick)
-    if entry.kind == "inserter" then
+    local kind = entry.kind
+    if kind == "inserter" then
         return process_inserter(entry, tick)
+    elseif kind == "probe" then
+        return process_probe(entry, tick)
     end
     return process(entry, tick)
 end

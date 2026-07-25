@@ -77,6 +77,7 @@ local function default_state()
         total_work = 0,   -- sum of entry.work, drives the global period
         demand = 0,       -- sum of entry.rate, the per-tick slot grant
         credit = 0,       -- slots banked towards the next visit
+        probe_count = 0,  -- entries of kind "probe", for their budget share
     }
 end
 
@@ -152,6 +153,15 @@ function scheduler.global_period()
     local speed = game.speed
     local slot_budget = config.SLOT_BUDGET
     local budget = speed > 1 and slot_budget / speed or slot_budget
+
+    -- Probes spend a fixed share of the budget (capped at a quarter by
+    -- probe_window); the walks adapt their period to what remains, so adding
+    -- watchers genuinely widens the rhythm instead of silently overspending.
+    local probes = storage.probe_count or 0
+    if probes > 0 then
+        budget = budget - probes / scheduler.probe_window()
+    end
+
     local period_min, period_max = config.PERIOD_MIN, config.PERIOD_MAX
 
     if work <= budget * period_min then return period_min end
@@ -196,14 +206,33 @@ function scheduler.schedule(entry, tick)
     schedule_at(entry, tick, period)
 end
 
---- Bring an entry forward to be processed as soon as the budget allows.
--- Already-pending entries are left alone, so storms of expedites - GUI
--- open/close spam, a row of bays built in one paste - cannot flood the heap
--- with duplicate pairs. `last` is never touched: recovery derives from it.
-function scheduler.expedite(entry, tick)
-    if entry.due <= tick then return end
-    entry.due = tick
-    heap_push(tick, entry.key)
+--- Bring an entry forward, to `when`, if it is not already due sooner.
+-- The guard means storms of expedites - GUI open/close spam, a row of bays
+-- built in one paste, a probe firing on chunks about to be visited anyway -
+-- cannot flood the heap with duplicate pairs or steal work that is already
+-- scheduled. `last` is never touched: recovery derives from it.
+function scheduler.expedite(entry, when)
+    if entry.due <= when then return end
+    entry.due = when
+    heap_push(when, entry.key)
+end
+
+---- Probes ----
+
+--- How often each probe asks its one cheap question. The user's reaction
+-- window, widened so that all probes together never spend more than a quarter
+-- of the slot budget - the closed loop that keeps ten thousand containers
+-- from starving the walks that do the real preserving.
+function scheduler.probe_window()
+    local window = config.reaction_window
+    local by_budget = (storage.probe_count or 0) / (0.25 * config.SLOT_BUDGET)
+    if by_budget > window then window = by_budget end
+    return math.ceil(window)
+end
+
+--- Reschedule a probe on the current probe window.
+function scheduler.schedule_probe(entry, tick)
+    schedule_at(entry, tick, scheduler.probe_window())
 end
 
 ---- Queue membership ----
@@ -248,7 +277,16 @@ function scheduler.queue_add(entry)
     end
     arrivals_work = arrivals_work + entry.work
     local stagger = floor(arrivals_work / (2 * config.SLOT_BUDGET))
+    -- With very short-lived modded items even a drain queue can be too slow;
+    -- past this point arrivals herd onto one due tick and the credit loop
+    -- degrades to as-fast-as-budget-allows, trading smoothness for the
+    -- guarantee, which is the right way round.
+    if stagger > config.STAGGER_MAX then stagger = config.STAGGER_MAX end
     schedule_at(entry, now, config.PERIOD_MIN + stagger)
+
+    if entry.kind == "probe" then
+        storage.probe_count = (storage.probe_count or 0) + 1
+    end
 end
 
 --- Remove an entry in constant time by swapping the last one into its place.
@@ -263,6 +301,9 @@ function scheduler.queue_remove(key)
     storage.total_work = storage.total_work - entry.work
     storage.demand = storage.demand - (entry.rate or 0)
     storage.index[key] = nil
+    if entry.kind == "probe" then
+        storage.probe_count = (storage.probe_count or 1) - 1
+    end
 
     if position ~= last then
         queue[position] = queue[last]

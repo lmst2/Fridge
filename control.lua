@@ -102,6 +102,13 @@ local function track(entity)
                 bays = { entity },
                 full_freeze = true,
             }
+            if config.probes_on then
+                scheduler.queue_add {
+                    key = key .. "!p",
+                    kind = "probe",
+                    surface = surface_name,
+                }
+            end
         end
         return
     end
@@ -138,11 +145,22 @@ local function track(entity)
             key = scheduler.chunk_key(entity.unit_number, chunk),
             kind = spec.kind,
             entity = entity,
+            uid = entity.unit_number,
             proxy = proxy,
             inventory = spec.inventory,
             full_freeze = spec.full_freeze or false,
             from = from,
             to = to < slots and to or slots,
+        }
+    end
+
+    if config.probes_on then
+        scheduler.queue_add {
+            key = "p" .. entity.unit_number,
+            kind = "probe",
+            entity = entity,
+            inventory = spec.inventory,
+            uid = entity.unit_number,
         }
     end
 end
@@ -175,6 +193,7 @@ local function OnEntityRemoved(event)
             end
         end
         if #bays == 0 then
+            scheduler.queue_remove(entry.key .. "!p")
             scheduler.queue_remove(entry.key)
         else
             -- One fewer bay: re-walk so the entry's work drops to the smaller
@@ -187,6 +206,7 @@ local function OnEntityRemoved(event)
     local entry = scheduler.entry_for(entity.unit_number)
     if entry and entry.proxy and entry.proxy.valid then entry.proxy.destroy() end
     executor.forget(entity.unit_number)
+    scheduler.queue_remove("p" .. entity.unit_number)
     for _, key in pairs(scheduler.chunk_keys(entity.unit_number)) do
         scheduler.queue_remove(key)
     end
@@ -229,6 +249,50 @@ local function OnTick(event)
     scheduler.tick(event.tick, executor.process_entry)
 end
 
+--- Match the probe population to config.probes_on.
+--
+-- Probes exist only while some item spoils too fast for the refresh rhythm to
+-- promise discovery; the max-refresh-gap setting is part of that inequality,
+-- so a runtime settings change can flip it either way. Keys are collected
+-- before mutating, since queue_remove swaps entries around.
+local function sync_probes()
+    storage.probe_count = storage.probe_count or 0
+    if not config.probes_on then
+        if storage.probe_count == 0 then return end
+        local keys = {}
+        for _, entry in pairs(storage.queue) do
+            if entry.kind == "probe" then keys[#keys + 1] = entry.key end
+        end
+        for _, key in pairs(keys) do scheduler.queue_remove(key) end
+        return
+    end
+
+    local adds, covered = {}, {}
+    for _, entry in pairs(storage.queue) do
+        if entry.kind == "platform" then
+            covered[entry.key] = covered[entry.key] or true
+            adds[#adds + 1] = { key = entry.key .. "!p", kind = "probe",
+                                surface = entry.surface }
+        elseif entry.inventory and entry.entity and entry.entity.valid then
+            local uid = entry.uid or entry.entity.unit_number
+            if not covered[uid] then
+                covered[uid] = true
+                adds[#adds + 1] = { key = "p" .. uid, kind = "probe",
+                                    entity = entry.entity, uid = uid,
+                                    inventory = entry.inventory }
+            end
+        end
+    end
+    -- queue_add already refuses keys that exist, so re-syncing is idempotent.
+    for _, add in pairs(adds) do scheduler.queue_add(add) end
+end
+
+--- @function OnSettingsChanged
+local function OnSettingsChanged()
+    config.refresh()
+    sync_probes()
+end
+
 ---- Initialisation ----
 
 --- Rebuild the queue from scratch by scanning every surface.
@@ -252,6 +316,13 @@ end
 local function init_events()
     config.refresh()
     executor.init_cache()
+
+    -- One line of load-time truth for bug reports: what the prototype scan
+    -- concluded and whether the probe subsystem is live in this game.
+    log(string.format(
+        "[Fridge] min_spoil=%s discovery_window=%s probes=%s reaction=%s",
+        tostring(config.min_spoil), tostring(config.discovery_window),
+        config.probes_on and "on" or "off", tostring(config.reaction_window)))
 
     local filter = {}
     for _, name in pairs(tracked_names()) do
@@ -286,7 +357,7 @@ local function init_events()
     script.on_event(defines.events.on_gui_closed, OnPlayerMovedItems)
 
     script.on_event(defines.events.on_tick, OnTick)
-    script.on_event(defines.events.on_runtime_mod_setting_changed, config.refresh)
+    script.on_event(defines.events.on_runtime_mod_setting_changed, OnSettingsChanged)
 end
 
 ---- Lifecycle ----
