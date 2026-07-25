@@ -15,6 +15,7 @@
 --   key          unit_number, or "surface:<name>" for a platform hub
 --   kind         "container" | "warehouse" | "inserter" | "platform"
 --   entity       the container, inserter or hub
+--   uid          the walked entity's unit_number, keys the handle cache
 --   proxy        power proxy (warehouse only)
 --   bays         freezing cargo bays granting capacity (platform only)
 --   surface      surface name (platform only)

@@ -186,6 +186,7 @@ local function OnEntityRemoved(event)
 
     local entry = scheduler.entry_for(entity.unit_number)
     if entry and entry.proxy and entry.proxy.valid then entry.proxy.destroy() end
+    executor.forget(entity.unit_number)
     for _, key in pairs(scheduler.chunk_keys(entity.unit_number)) do
         scheduler.queue_remove(key)
     end

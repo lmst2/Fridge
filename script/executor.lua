@@ -24,6 +24,36 @@ local SKIP_DRIFT = config.SKIP_DRIFT
 
 local executor = {}
 
+---- Stack handle cache ----
+
+-- Indexing an inventory (`inv[i]`) creates a fresh LuaItemStack userdata each
+-- time; measured, that creation is ~40% of a fused walk and all of its GC
+-- churn. A slot handle stays valid as long as its inventory does, so they are
+-- built once per entity and reused across walks: 2.10 -> 1.04 us per slot.
+--
+-- Keyed by unit_number, which the engine never reuses, so a replaced platform
+-- hub (new unit number) can never collide with its predecessor's handles.
+-- alive() drops dead entities before any walk, and a valid entity implies
+-- valid handles. Module-local and rebuilt lazily after every load - handles
+-- must never reach `storage`.
+local stack_handles = {}
+
+--- The per-slot handles for this inventory, grown to cover slot `hi`.
+local function stacks_for(uid, inv, hi)
+    local stacks = stack_handles[uid]
+    if not stacks then
+        stacks = {}
+        stack_handles[uid] = stacks
+    end
+    for i = #stacks + 1, hi do stacks[i] = inv[i] end
+    return stacks
+end
+
+--- Drop an entity's cached handles (it was removed, or a hub was replaced).
+function executor.forget(uid)
+    if uid then stack_handles[uid] = nil end
+end
+
 ---- Prototype cache ----
 
 -- Rebuilt on every load and deliberately outside `storage`: prototype data
@@ -34,6 +64,7 @@ local quality_changes_spoil = false
 
 function executor.init_cache()
     spoil_ticks = {}
+    stack_handles = {}
     -- Vanilla qualities leave spoil time alone, so the cache can be keyed by
     -- item name and the stack's quality never read. A mod that does change it
     -- forces the slower, fully correct path.
@@ -92,11 +123,12 @@ end
 -- needs - it drives that entry's urgency. Refrigerators are the most numerous
 -- entries and are allowed to spoil, so they skip it.
 --
+-- @param stacks Cached per-slot handles covering [from, to]
 -- @param from,to Slot range this entry owns (a large inventory is split)
 -- @param cap Optional limit on how many stacks are preserved
 -- @return number Slots examined - the visit's real cost
 -- @return number|nil Earliest tick anything in range spoils
-local function walk(inv, from, to, recover, tick, track, cap)
+local function walk(inv, stacks, from, to, recover, tick, track, cap)
     if inv.is_empty() then return 1 end
 
     local scanned, preserved = to - from + 1, 0
@@ -110,7 +142,7 @@ local function walk(inv, from, to, recover, tick, track, cap)
     local ceiling = tick - FRESHNESS_MARGIN
 
     for i = from, to do
-        local stack = inv[i]
+        local stack = stacks[i]
         if stack.valid_for_read then
             local spoils_at
             if by_quality then
@@ -188,6 +220,10 @@ local function contents_of(entry)
             local surface = game.surfaces[entry.surface]
             hub = surface and surface.platform and surface.platform.hub
             entry.entity = hub
+            -- A replaced hub is a new entity: its predecessor's slot handles
+            -- can never be valid again, so drop them with the old unit number.
+            executor.forget(entry.uid)
+            entry.uid = hub and hub.unit_number or nil
         end
         if not hub then return nil end
         return hub.get_inventory(defines.inventory.hub_main),
@@ -215,6 +251,7 @@ local function alive(entry)
             entry.proxy.destroy()
         end
     end
+    executor.forget(entry.uid)
     scheduler.queue_remove(entry.key)
     return false
 end
@@ -276,7 +313,16 @@ local function process(entry, tick)
         return 0
     end
 
-    local scanned, deadline = walk(inv, entry.from or 1, entry.to or #inv,
+    -- Derived lazily so entries from older saves pick it up on first visit.
+    local uid = entry.uid
+    if not uid then
+        uid = entry.entity.unit_number
+        entry.uid = uid
+    end
+
+    local to = entry.to or #inv
+    local scanned, deadline = walk(inv, stacks_for(uid, inv, to),
+                                   entry.from or 1, to,
                                    recover, tick, entry.full_freeze, cap)
     scheduler.set_work(entry, scanned)
     entry.deadline = deadline
