@@ -1,6 +1,6 @@
 ---------------------------------------------------------------------------------------------------
-Version: 0.3.3
-Date: 2026-07-25
+Version: 0.4.0
+Date: 2026-07-24
   Bugfixes:
     - Fixed the game stuttering every couple of seconds in bases with many freezing warehouses (especially legendary ones). Preservation is now spread evenly across ticks instead of running the whole factory's work on a single tick.
     - Fixed the space platform cargo bay recipe being unavailable because its technology was not unlocked.
