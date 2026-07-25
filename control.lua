@@ -317,13 +317,6 @@ local function init_events()
     config.refresh()
     executor.init_cache()
 
-    -- One line of load-time truth for bug reports: what the prototype scan
-    -- concluded and whether the probe subsystem is live in this game.
-    log(string.format(
-        "[Fridge] min_spoil=%s discovery_window=%s probes=%s reaction=%s",
-        tostring(config.min_spoil), tostring(config.discovery_window),
-        config.probes_on and "on" or "off", tostring(config.reaction_window)))
-
     local filter = {}
     for _, name in pairs(tracked_names()) do
         filter[#filter + 1] = { filter = "name", name = name }
