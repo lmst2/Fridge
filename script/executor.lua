@@ -119,16 +119,19 @@ end
 
 --- Walk one slot range of an inventory, preserving what can spoil.
 --
--- `track` asks for the earliest spoil tick, which only a full-freeze entry
--- needs - it drives that entry's urgency. Refrigerators are the most numerous
--- entries and are allowed to spoil, so they skip it.
+-- The earliest spoil tick falls out of values the pass reads anyway, so every
+-- kind reports it and the scheduler shortens the period of whatever holds
+-- something close to dying. For freezers that keeps the no-spoil promise; for
+-- refrigerators and wagons it makes a dying item's last stretch exact - the
+-- slowdown must be applied before the raw spoil tick arrives, or the item
+-- dies early inside a working fridge.
 --
 -- @param stacks Cached per-slot handles covering [from, to]
 -- @param from,to Slot range this entry owns (a large inventory is split)
 -- @param cap Optional limit on how many stacks are preserved
 -- @return number Slots examined - the visit's real cost
 -- @return number|nil Earliest tick anything in range spoils
-local function walk(inv, stacks, from, to, recover, tick, track, cap)
+local function walk(inv, stacks, from, to, recover, tick, cap)
     if inv.is_empty() then return 1 end
 
     local scanned, preserved = to - from + 1, 0
@@ -167,7 +170,7 @@ local function walk(inv, stacks, from, to, recover, tick, track, cap)
                 end
             end
             if spoils_at then
-                if track and (not deadline or spoils_at < deadline) then
+                if not deadline or spoils_at < deadline then
                     deadline = spoils_at
                 end
                 preserved = preserved + 1
@@ -323,7 +326,7 @@ local function process(entry, tick)
     local to = entry.to or #inv
     local scanned, deadline = walk(inv, stacks_for(uid, inv, to),
                                    entry.from or 1, to,
-                                   recover, tick, entry.full_freeze, cap)
+                                   recover, tick, cap)
     scheduler.set_work(entry, scanned)
     entry.deadline = deadline
     entry.seen = true
@@ -334,6 +337,8 @@ local function process(entry, tick)
 end
 
 --- Preserve an inserter's held stack. One slot, no inventory to resolve.
+-- The held stack's spoil tick doubles as the entry's deadline, so a blocked
+-- hand holding something short-lived is revisited before it can die there.
 local function process_inserter(entry, tick)
     if not alive(entry) then return 0 end
 
@@ -343,7 +348,9 @@ local function process_inserter(entry, tick)
         local recover = recovery_for(entry, elapsed, tick)
         local held = entry.entity.held_stack
         if recover > 0 and held and held.valid_for_read then
-            preserve_stack(held, recover, tick)
+            entry.deadline = preserve_stack(held, recover, tick)
+        else
+            entry.deadline = nil
         end
     end
     scheduler.schedule(entry, tick)

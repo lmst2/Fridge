@@ -168,9 +168,12 @@ end
 
 --- Give an entry its next due tick, and its share of the per-tick budget.
 --
--- Normally the global period. A full-freeze entry promises its contents do not
--- spoil, so as its earliest deadline approaches, its period shortens to come
--- back SAFETY ticks ahead of it - continuously, not as a change of category.
+-- Normally the global period. As an entry's earliest deadline approaches, its
+-- period shortens to come back SAFETY ticks ahead of it - continuously, not as
+-- a change of category, and for every kind alike. A freezer is revisited in
+-- time to keep its no-spoil promise; a refrigerator or wagon in time to apply
+-- the slowdown a dying item is owed, so it dies on the slowed schedule instead
+-- of the raw one; an inserter in time to preserve a blocked hand.
 --
 -- A full-freeze entry that has never been read is treated as if it might be
 -- urgent: it is checked within PERIOD_MIN so its real deadline is learned
@@ -188,7 +191,7 @@ function scheduler.schedule(entry, tick)
     else
         period = scheduler.global_period()
         local deadline = entry.deadline
-        if deadline and entry.full_freeze then
+        if deadline then
             local slack = deadline - tick - config.SAFETY
             if slack < period then period = slack end
         end

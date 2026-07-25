@@ -209,12 +209,14 @@ local function OnPlayerMovedItems(event)
     local entity = event.entity
     if not (entity and entity.valid and entity.unit_number) then return end
 
-    -- Every chunk, since the stack could have landed in any slot. Dropping the
-    -- item count also stops the large-factory skip short-circuiting the very
-    -- visit that was asked for.
+    -- Every chunk, since the stack could have landed in any slot, and every
+    -- kind - a nearly-spoiled stack dropped into a refrigerator needs its
+    -- deadline learned just as urgently as one dropped into a freezer.
+    -- Dropping the item count also stops the large-factory skip
+    -- short-circuiting the very visit that was asked for.
     for _, key in pairs(scheduler.chunk_keys(entity.unit_number)) do
         local entry = scheduler.entry_for(key)
-        if entry and entry.full_freeze then
+        if entry then
             entry.count = nil
             scheduler.expedite(entry, event.tick)
         end
