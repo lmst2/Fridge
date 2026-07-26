@@ -123,6 +123,9 @@ end
 
 --[[ ------------------------- Power Proxy ------------------------- ]]--
 
+-- The warehouse's footprint, shared with the power proxy that lives inside it.
+local warehouse_collision_box = {{-2.8, -2.8}, {2.8, 2.8}}
+
 -- Create hidden power entity for warehouse power consumption
 local power_proxy = table.deepcopy(data.raw["roboport"]["roboport"])
 power_proxy.name = "warehouse-power-proxy"
@@ -162,9 +165,26 @@ power_proxy.door_animation_down = nil
 power_proxy.recharging_animation = nil
 power_proxy.spawn_and_station_height = 0
 
--- Configure entity placement and interaction
+-- Configure entity placement and interaction.
+--
+-- The proxy is copied from the roboport, and Space Age gives the roboport
+-- heating_energy in its *data* stage - so the copy inherits it and the proxy is
+-- a freezable entity. It is created at the warehouse's own position, i.e. dead
+-- centre of a 6x6 building, and the engine heats an entity only when a heat
+-- source's bounding box, grown by its heating_radius (1 tile for a heat pipe),
+-- overlaps the target's *collision* box. A pipe laid against the warehouse
+-- reaches 2.2 tiles in from the wall; a 0.6-tile box at the centre is 2.8 away,
+-- so no reachable tile could ever heat it. On a freezing planet the warehouse
+-- therefore read as "cold" for good - a demand the player had no way to meet,
+-- however completely they ringed the building in heat pipes.
+--
+-- Giving the proxy the warehouse's own footprint makes a heat pipe laid against
+-- any side of the building reach it, which is what the building looks like it
+-- should need. The box is inert - collision_mask is empty, so it obstructs
+-- nothing - and selection still uses selection_box, which stays small, so
+-- clicks continue to land on the warehouse.
 power_proxy.selection_box = {{-0.3, -0.3}, {0.3, 0.3}}
-power_proxy.collision_box = {{-0.3, -0.3}, {0.3, 0.3}}
+power_proxy.collision_box = warehouse_collision_box
 power_proxy.collision_mask = {layers = {}}
 power_proxy.flags = {
   "not-blueprintable",
@@ -220,7 +240,7 @@ warehouse.picture = {
 }
 
 -- Collision and selection properties
-warehouse.collision_box = {{-2.8, -2.8}, {2.8, 2.8}}
+warehouse.collision_box = table.deepcopy(warehouse_collision_box)
 warehouse.selection_box = {{-3, -2.8}, {3, 3}}
 warehouse.collision_mask = {
   layers = {
