@@ -865,6 +865,35 @@ local function OnPlayerMovedItems(event)
     end
 end
 
+--- Pick up rolling stock that appeared without a build event.
+--
+-- A train cannot be moved to another surface, so mods that carry one through a
+-- tunnel rebuild it: `create_entity` a copy of each carriage on the far side,
+-- copy the inventory across and `destroy()` the original. Neither call raises
+-- the build or mine events, so the copy was never registered - a preservation
+-- wagon came out of the tunnel as an ordinary one and its cargo spoiled at full
+-- rate from then on. (The abandoned entry is harmless: it finds its entity
+-- invalid on its next visit and removes itself.)
+--
+-- on_train_created is raised whenever rolling stock is created, coupled or
+-- decoupled, whoever built it, so it sees those copies where the build events
+-- do not. Carriages already queued are skipped, so the ordinary build path is
+-- untouched and a coupling costs one lookup per carriage.
+--
+-- @function OnTrainCreated
+local function OnTrainCreated(event)
+    local train = event.train
+    if not (train and train.valid) then return end
+
+    for _, carriage in pairs(train.carriages) do
+        -- Chunk 0 keeps the bare unit_number, so it is what to test for.
+        if carriage.valid and TRACKED[carriage.name]
+            and not storage.index[carriage.unit_number] then
+            track(carriage)
+        end
+    end
+end
+
 ---- Initialisation ----
 
 local function init_settings()
@@ -927,6 +956,12 @@ local function init_events()
     -- not already tracking in one lookup.
     script.on_event(defines.events.on_player_fast_transferred, OnPlayerMovedItems)
     script.on_event(defines.events.on_gui_closed, OnPlayerMovedItems)
+
+    -- The only notice a mod gets that rolling stock exists when whatever built
+    -- it raised no build event. Unfiltered: the event carries no entity to
+    -- filter on, and the handler drops a train of untracked carriages in one
+    -- lookup each.
+    script.on_event(defines.events.on_train_created, OnTrainCreated)
 
     script.on_event(defines.events.on_tick, on_tick)
     script.on_event(defines.events.on_runtime_mod_setting_changed, init_settings)
