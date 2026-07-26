@@ -1,0 +1,14 @@
+{
+  "entity": [
+    ["preservation-inserter", "preservation-fast-inserter"]
+  ],
+  "item": [
+    ["preservation-inserter", "preservation-fast-inserter"]
+  ],
+  "recipe": [
+    ["preservation-inserter", "preservation-fast-inserter"]
+  ],
+  "technology": [
+    ["preservation-inserter", "preservation-fast-inserter"]
+  ]
+}
