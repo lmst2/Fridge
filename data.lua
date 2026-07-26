@@ -172,6 +172,16 @@ if mods["space-age"] then
   power_proxy.surface_conditions = {}
 end
 
+-- Space Age gives the roboport heating_energy = 300kW, and the proxy inherits it
+-- from the deepcopy. On a planet with entities_require_heating the proxy - which
+-- sits at the warehouse centre, out of reach of heat pipes laid around a 6x6
+-- building - freezes, draws the frozen overlay over the warehouse and stops
+-- accepting power, so the warehouse silently stops preserving. The warehouse
+-- itself is a container and never freezes; a hidden power sink must not add a
+-- requirement the entity the player placed does not have. Zero means it does not
+-- freeze.
+power_proxy.heating_energy = "0W"
+
 
 --[[ ------------------------- Preservation Warehouse ------------------------- ]]--
 
