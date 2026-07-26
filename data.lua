@@ -11,8 +11,17 @@ local settings = {
   platform_bonus_capacity = settings.startup["fridge-space-plantform-capacity"].value
 }
 
--- Determine energy cell type based on available mods
-local energy_cell = mods["Factorio-Tirberium"] and "tiberium-fuel-cell" or "uranium-fuel-cell"
+-- Determine energy cell type based on available mods.
+-- The Tiberium mod's internal name is "Factorio-Tiberium"; the old spelling
+-- ("Tirberium") never matched, so this substitution has never happened for
+-- anyone. info.json carries a hidden optional dependency on it so its items are
+-- defined by the time this runs; the data.raw check keeps us on the vanilla
+-- cell rather than referencing an item that is not there, should a version of
+-- that mod ever not ship it.
+local energy_cell = "uranium-fuel-cell"
+if mods["Factorio-Tiberium"] and data.raw.item["tiberium-fuel-cell"] then
+  energy_cell = "tiberium-fuel-cell"
+end
 
 -- Helper function to recursively apply preservation tint to sprite structures
 local function apply_preservation_tint(obj)

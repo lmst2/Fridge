@@ -10,6 +10,7 @@
   "spoiling_required": true,
   "dependencies": [
     "base >= 2.1.2",
-    "?space-age"
+    "?space-age",
+    "(?) Factorio-Tiberium"
   ]
 }
