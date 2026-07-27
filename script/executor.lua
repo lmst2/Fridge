@@ -286,13 +286,24 @@ local function process(entry, tick)
     if not inv then
         -- Nothing to preserve: an unpowered warehouse, a platform without a
         -- hub. Do not bank the elapsed time - a warehouse that lost power must
-        -- not retroactively freeze everything when it comes back - and forget
-        -- what it held, so nothing stale keeps it looking urgent. `work` keeps
+        -- not retroactively freeze everything when it comes back. `work` keeps
         -- the full-walk figure: it is what a visit *might* cost, and shrinking
         -- it would let a base-wide power cut collapse the whole budget.
         entry.last = tick
-        entry.deadline, entry.count = nil, nil
-        scheduler.schedule(entry, tick)
+        if entry.primed then
+            -- Steady state: forget what it held, so nothing stale keeps a
+            -- long-dead warehouse looking urgent.
+            entry.deadline, entry.count = nil, nil
+            scheduler.schedule(entry, tick)
+        else
+            -- Never read since (re)creation: this is a transient, not a
+            -- verdict. A rebuilt or freshly built proxy may still be
+            -- charging, and a rebuild-seeded deadline may be genuinely
+            -- urgent - "cannot preserve right now" must not become "no
+            -- hurry to look again". Keep the knowledge and retry fast
+            -- until the first real read settles the entry's state.
+            scheduler.schedule_at(entry, tick, config.PERIOD_MIN)
+        end
         return 1
     end
 
@@ -348,6 +359,7 @@ local function process(entry, tick)
                                    recover, tick, cap)
     scheduler.set_work(entry, scanned)
     entry.deadline = deadline
+    entry.primed = true
     entry.seen = nil  -- retired flag; clear it out of older saves
     if config.skip_unchanged then entry.count = inv.get_item_count() end
 
