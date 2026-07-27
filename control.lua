@@ -104,7 +104,7 @@ local function track(entity)
             }
             if config.probes_on then
                 scheduler.queue_add {
-                    key = key .. "!p",
+                    key = "probe:" .. key,
                     kind = "probe",
                     surface = surface_name,
                 }
@@ -156,7 +156,7 @@ local function track(entity)
 
     if config.probes_on then
         scheduler.queue_add {
-            key = "p" .. entity.unit_number,
+            key = "probe:" .. entity.unit_number,
             kind = "probe",
             entity = entity,
             inventory = spec.inventory,
@@ -193,7 +193,7 @@ local function OnEntityRemoved(event)
             end
         end
         if #bays == 0 then
-            scheduler.queue_remove(entry.key .. "!p")
+            scheduler.queue_remove("probe:" .. entry.key)
             scheduler.queue_remove(entry.key)
         else
             -- One fewer bay: re-walk so the entry's work drops to the smaller
@@ -206,7 +206,7 @@ local function OnEntityRemoved(event)
     local entry = scheduler.entry_for(entity.unit_number)
     if entry and entry.proxy and entry.proxy.valid then entry.proxy.destroy() end
     executor.forget(entity.unit_number)
-    scheduler.queue_remove("p" .. entity.unit_number)
+    scheduler.queue_remove("probe:" .. entity.unit_number)
     for _, key in pairs(scheduler.chunk_keys(entity.unit_number)) do
         scheduler.queue_remove(key)
     end
@@ -271,13 +271,13 @@ local function sync_probes()
     for _, entry in pairs(storage.queue) do
         if entry.kind == "platform" then
             covered[entry.key] = covered[entry.key] or true
-            adds[#adds + 1] = { key = entry.key .. "!p", kind = "probe",
+            adds[#adds + 1] = { key = "probe:" .. entry.key, kind = "probe",
                                 surface = entry.surface }
         elseif entry.inventory and entry.entity and entry.entity.valid then
             local uid = entry.uid or entry.entity.unit_number
             if not covered[uid] then
                 covered[uid] = true
-                adds[#adds + 1] = { key = "p" .. uid, kind = "probe",
+                adds[#adds + 1] = { key = "probe:" .. uid, kind = "probe",
                                     entity = entry.entity, uid = uid,
                                     inventory = entry.inventory }
             end
@@ -296,7 +296,26 @@ end
 ---- Initialisation ----
 
 --- Rebuild the queue from scratch by scanning every surface.
+--
+-- Knowledge already paid for is not destroyed with the queue. Deadlines and
+-- last-visit ticks are harvested by key before the reset and seeded back
+-- afterwards: an item that survived an old power outage may sit at a few
+-- dozen ticks of remaining life, held there by deadline scheduling, forever -
+-- rebuild amnesia plus the bulk-arrival stagger would let exactly that item
+-- rot before its first staggered look. Seeded entries whose deadline is near
+-- are expedited ahead of the stagger (expedite's guard skips the rest), and
+-- seeding `last` keeps recovery continuous across the update instead of
+-- silently dropping up to one period of it.
 local function init_entities()
+    local memory = {}
+    if storage.queue then
+        for _, entry in pairs(storage.queue) do
+            if entry.kind ~= "probe" then
+                memory[entry.key] = { deadline = entry.deadline, last = entry.last }
+            end
+        end
+    end
+
     scheduler.reset_state()
 
     local names = tracked_names()
@@ -309,6 +328,22 @@ local function init_entities()
         end
         for _, entity in pairs(surface.find_entities_filtered { name = names }) do
             track(entity)
+        end
+    end
+
+    local now = game.tick
+    for _, entry in pairs(storage.queue) do
+        local known = memory[entry.key]
+        if known then
+            entry.deadline = known.deadline
+            if known.last and known.last < entry.last then
+                entry.last = known.last
+            end
+            if known.deadline then
+                local when = known.deadline - config.SAFETY
+                if when < now then when = now end
+                scheduler.expedite(entry, when)
+            end
         end
     end
 end

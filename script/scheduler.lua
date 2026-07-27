@@ -27,6 +27,7 @@
 --   due          tick it should next be processed
 --   rate         its share of the per-tick slot budget, work/period
 --   deadline     earliest tick anything it holds spoils
+--   primed       has completed a real read since it was (re)created
 --   count        item total at the last walk, for the large-factory skip
 -- }
 --
@@ -39,6 +40,12 @@ local floor = math.floor
 local scheduler = {}
 
 ---- Keys ----
+--
+-- Four key namespaces, disjoint by construction: container chunks are the
+-- bare unit_number (chunk 0) or "N#k"; platform entries are "surface:<name>";
+-- probes are "probe:" followed by one of the former. Surface names are user
+-- input, so nothing may be appended AFTER them - a suffix scheme would let a
+-- surface literally named "X!p" forge another surface's probe key.
 
 function scheduler.platform_key(surface_name)
     return "surface:" .. surface_name
@@ -184,6 +191,7 @@ local function schedule_at(entry, tick, period)
     entry.rate = entry.work / period
     heap_push(entry.due, entry.key)
 end
+scheduler.schedule_at = schedule_at
 
 --- Give an entry its next due tick, and its share of the per-tick budget.
 --
