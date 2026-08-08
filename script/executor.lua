@@ -388,27 +388,71 @@ local function process_inserter(entry, tick)
     return 1
 end
 
---- One cheap question per entity: has anything new arrived since last look?
+---- Probes ----
 --
--- Probes exist only when a mod's items spoil too fast for the ordinary
--- refresh rhythm to promise discovery (config.probes_on). A count that went
--- UP means something was inserted by an inserter, robot or script - the paths
--- no event covers - so the entity's walk entries are pulled forward to learn
--- the newcomer's deadline. Removals cannot create spoilage risk and do not
--- fire. The probe owns its baseline and refreshes it on every look, fired or
--- not, so steady feeding cannot re-trigger it forever.
-local function process_probe(entry, tick)
+-- One cheap question per tracked entity: has anything new arrived since the
+-- last look? A count that went UP means something was inserted by an
+-- inserter, robot or script - the paths no event covers - so the entity's
+-- walk entries are pulled forward to learn the newcomer's deadline within
+-- the reaction window instead of a full heartbeat. Removals cannot create
+-- spoilage risk and do not fire; a count-neutral swap is invisible here,
+-- which is exactly why correctness never rests on probes - the heartbeat's
+-- period is capped at the discovery window (config.derive) and catches
+-- whatever they miss.
+--
+-- Probes are deliberately NOT queue entries. A trip through the due-order
+-- heap costs ~25us of machinery - pop, dispatch, billing, reschedule -
+-- before any work happens: fine print under a 50-slot walk, a 3x markup on
+-- a single cheap question. Every probe shares one fixed period and unit
+-- cost, so they live in a flat ring instead: a cursor walks the array at
+-- size/window probes per tick with no heap traffic at all. Their budget
+-- share is still charged - global_period subtracts it - and the window
+-- widens automatically past a quarter of the budget (scheduler.probe_window).
+--
+-- probe = { entity, inventory, uid }   an ordinary container
+--       | { surface }                  a platform hub
+-- plus `baseline`, the count at the last look, refreshed whether or not it
+-- fired, so steady feeding cannot re-trigger it forever.
+
+--- Register a probe watching an entity or a platform surface. Idempotent.
+function executor.probe_add(probe)
+    local probes, index = storage.probes, storage.probe_index
+    if not probes then return end  -- save predates the ring; rebuild syncs it
+    local key = probe.uid or probe.surface
+    if index[key] then return end
+    probes[#probes + 1] = probe
+    index[key] = #probes
+end
+
+--- Drop the probe watching this unit_number or surface name, if any.
+function executor.probe_remove(key)
+    local probes, index = storage.probes, storage.probe_index
+    if not probes then return end
+    local position = index[key]
+    if not position then return end
+
+    index[key] = nil
+    local last = #probes
+    if position ~= last then
+        probes[position] = probes[last]
+        index[probes[position].uid or probes[position].surface] = position
+    end
+    probes[last] = nil
+    if storage.probe_cursor and storage.probe_cursor > #probes then
+        storage.probe_cursor = 1
+    end
+end
+
+--- Ask one probe its question. Returns false when its target is gone.
+local function check_probe(probe, tick)
     local count
 
-    if entry.surface then
+    if probe.surface then
         -- The platform hub: plates and ore churn through it constantly, so a
         -- raw count would fire every window. One get_contents call instead,
         -- summing only names that can spoil.
-        local target = scheduler.entry_for(scheduler.platform_key(entry.surface))
-        if not target then
-            scheduler.queue_remove(entry.key)
-            return 1
-        end
+        local target = scheduler.entry_for(scheduler.platform_key(probe.surface))
+        if not target then return false end
         local inv = contents_of(target)
         if inv then
             count = 0
@@ -424,27 +468,19 @@ local function process_probe(entry, tick)
                 if can_spoil then count = count + item.count end
             end
         end
-    else
-        local entity = entry.entity
-        if not (entity and entity.valid) then
-            scheduler.queue_remove(entry.key)
-            return 1
+        if count and probe.baseline and count > probe.baseline then
+            target.count = nil
+            scheduler.expedite(target, tick)
         end
-        count = entity.get_inventory(entry.inventory).get_item_count()
-    end
-
-    if count and entry.baseline and count > entry.baseline then
-        if entry.surface then
-            local target = scheduler.entry_for(scheduler.platform_key(entry.surface))
-            if target then
-                target.count = nil
-                scheduler.expedite(target, tick)
-            end
-        else
+    else
+        local entity = probe.entity
+        if not (entity and entity.valid) then return false end
+        count = entity.get_inventory(probe.inventory).get_item_count()
+        if probe.baseline and count > probe.baseline then
             -- Every chunk, staggered a tick apart: the newcomer could sit in
             -- any slot, and the merge that absorbed it could have shifted any
             -- stack's spoil time. Chunks already due sooner are left alone.
-            local keys = scheduler.chunk_keys(entry.uid)
+            local keys = scheduler.chunk_keys(probe.uid)
             for i = 1, #keys do
                 local chunk = scheduler.entry_for(keys[i])
                 if chunk then
@@ -454,10 +490,33 @@ local function process_probe(entry, tick)
             end
         end
     end
-    entry.baseline = count
 
-    scheduler.schedule_probe(entry, tick)
-    return 1
+    probe.baseline = count
+    return true
+end
+
+--- Advance the probe ring: size/window questions per tick, fractional pace
+-- carried in probe_acc, dead targets swapped out as the cursor meets them.
+function executor.run_probes(tick)
+    local probes = storage.probes
+    if not probes or #probes == 0 then return end
+
+    local due = (storage.probe_acc or 0) + #probes / scheduler.probe_window()
+    local cursor = storage.probe_cursor or 1
+    while due >= 1 do
+        due = due - 1
+        if cursor > #probes then cursor = 1 end
+        local probe = probes[cursor]
+        if check_probe(probe, tick) then
+            cursor = cursor + 1
+        else
+            -- The swap put an unvisited probe at `cursor`; do not advance.
+            executor.probe_remove(probe.uid or probe.surface)
+        end
+        if #probes == 0 then break end
+    end
+    storage.probe_acc = due
+    storage.probe_cursor = cursor
 end
 
 --- Visit one due entry, whatever its kind. The scheduler's tick callback.
@@ -466,7 +525,10 @@ function executor.process_entry(entry, tick)
     if kind == "inserter" then
         return process_inserter(entry, tick)
     elseif kind == "probe" then
-        return process_probe(entry, tick)
+        -- Probes briefly lived in the queue during development; sweep any
+        -- stragglers out of saves from that window.
+        scheduler.queue_remove(entry.key)
+        return 1
     end
     return process(entry, tick)
 end

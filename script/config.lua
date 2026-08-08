@@ -53,19 +53,25 @@ config.SAFETY = 3 * config.PERIOD_MIN
 
 --- Derive the guarantee bounds from the shortest spoil life in this game.
 --
--- An item that enters a container with at least half its life left must be
--- found while `SAFETY + PERIOD_MIN` ticks still remain, after which deadline
--- scheduling carries it. That makes `min_spoil/2 - SAFETY - PERIOD_MIN` the
--- widest discovery window the promise tolerates. With vanilla items it dwarfs
--- every refresh period, so the ordinary rhythm already guarantees discovery
--- and probing would be pure waste: `probes_on` stays false and nothing new
--- runs. Only when a mod adds items short-lived enough to break the inequality
--- do count probes activate, and bulk-arrival staggering is clamped to the same
+-- Nothing tells a mod that a machine inserted an item, so discovery has two
+-- carriers, and correctness rides only on the unconditional one. The
+-- heartbeat sees every change - including the count-neutral swaps no cheaper
+-- signal can catch - so its period is capped at the widest window the
+-- no-spoil promise tolerates for an item entering with half its life:
+-- `min_spoil/2 - SAFETY - PERIOD_MIN`. With vanilla items that window (1720
+-- ticks) exceeds any refresh-gap setting and the cap never binds; a mod with
+-- faster-spoiling items pays a tighter heartbeat, which is that mod's fair
+-- price. Count probes are the fast path on top: one cheap question per
+-- entity per reaction window catches the common arrival - an inserter or
+-- robot putting something in - roughly ten times sooner than a heartbeat,
+-- for a cost the budget barely notices, so they run whenever anything in the
+-- game can spoil at all. Bulk-arrival staggering is clamped to the same
 -- window. Items entering with less than `PERIOD_MIN + queue latency` of life
 -- are beyond any polling design; that floor is documented, not defended.
 local function derive()
     local min_spoil = config.min_spoil
     if not min_spoil then
+        -- Nothing spoils: nothing to discover, nothing to clamp.
         config.discovery_window = nil
         config.probes_on = false
         config.STAGGER_MAX = math.huge
@@ -76,8 +82,9 @@ local function derive()
     local window = math.floor(min_spoil / 2) - config.SAFETY - config.PERIOD_MIN
     if window < config.PERIOD_MIN then window = config.PERIOD_MIN end
     config.discovery_window = window
-    config.probes_on = config.PERIOD_MAX > window
+    config.probes_on = true
     config.STAGGER_MAX = window
+    if config.PERIOD_MAX > window then config.PERIOD_MAX = window end
     local reaction = settings.global["fridge-reaction-window"].value
     config.reaction_window = reaction < window and reaction or window
 end

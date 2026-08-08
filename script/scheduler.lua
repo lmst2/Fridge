@@ -41,11 +41,12 @@ local scheduler = {}
 
 ---- Keys ----
 --
--- Four key namespaces, disjoint by construction: container chunks are the
--- bare unit_number (chunk 0) or "N#k"; platform entries are "surface:<name>";
--- probes are "probe:" followed by one of the former. Surface names are user
--- input, so nothing may be appended AFTER them - a suffix scheme would let a
--- surface literally named "X!p" forge another surface's probe key.
+-- Three key namespaces, disjoint by construction: container chunks are the
+-- bare unit_number (chunk 0) or "N#k"; platform entries are "surface:<name>".
+-- Surface names are user input, so nothing may ever be appended AFTER them -
+-- a suffix scheme would let one surface's name forge another's key. (Probes
+-- have no keys at all; they live in a ring indexed by unit_number or raw
+-- surface name, two spaces a number and a string can never confuse.)
 
 function scheduler.platform_key(surface_name)
     return "surface:" .. surface_name
@@ -84,7 +85,10 @@ local function default_state()
         total_work = 0,   -- sum of entry.work, drives the global period
         demand = 0,       -- sum of entry.rate, the per-tick slot grant
         credit = 0,       -- slots banked towards the next visit
-        probe_count = 0,  -- entries of kind "probe", for their budget share
+        probes = {},      -- flat probe ring, owned by the executor...
+        probe_index = {}, -- ...unit_number/surface -> ring position
+        probe_acc = 0,    -- fractional probes owed to the current tick
+        probe_cursor = 1, -- next ring position to ask
     }
 end
 
@@ -164,9 +168,9 @@ function scheduler.global_period()
     -- Probes spend a fixed share of the budget (capped at a quarter by
     -- probe_window); the walks adapt their period to what remains, so adding
     -- watchers genuinely widens the rhythm instead of silently overspending.
-    local probes = storage.probe_count or 0
-    if probes > 0 then
-        budget = budget - probes / scheduler.probe_window()
+    local probes = storage.probes
+    if probes and #probes > 0 then
+        budget = budget - #probes / scheduler.probe_window()
     end
 
     local period_min, period_max = config.PERIOD_MIN, config.PERIOD_MAX
@@ -226,6 +230,10 @@ function scheduler.expedite(entry, when)
 end
 
 ---- Probes ----
+--
+-- The probe ring itself lives in the executor (it is all inventory
+-- crossings); only its pacing arithmetic belongs here, next to the budget
+-- it is charged against.
 
 --- How often each probe asks its one cheap question. The user's reaction
 -- window, widened so that all probes together never spend more than a quarter
@@ -233,14 +241,10 @@ end
 -- from starving the walks that do the real preserving.
 function scheduler.probe_window()
     local window = config.reaction_window
-    local by_budget = (storage.probe_count or 0) / (0.25 * config.SLOT_BUDGET)
+    local probes = storage.probes
+    local by_budget = (probes and #probes or 0) / (0.25 * config.SLOT_BUDGET)
     if by_budget > window then window = by_budget end
     return math.ceil(window)
-end
-
---- Reschedule a probe on the current probe window.
-function scheduler.schedule_probe(entry, tick)
-    schedule_at(entry, tick, scheduler.probe_window())
 end
 
 ---- Queue membership ----
@@ -291,10 +295,6 @@ function scheduler.queue_add(entry)
     -- guarantee, which is the right way round.
     if stagger > config.STAGGER_MAX then stagger = config.STAGGER_MAX end
     schedule_at(entry, now, config.PERIOD_MIN + stagger)
-
-    if entry.kind == "probe" then
-        storage.probe_count = (storage.probe_count or 0) + 1
-    end
 end
 
 --- Remove an entry in constant time by swapping the last one into its place.
@@ -309,9 +309,6 @@ function scheduler.queue_remove(key)
     storage.total_work = storage.total_work - entry.work
     storage.demand = storage.demand - (entry.rate or 0)
     storage.index[key] = nil
-    if entry.kind == "probe" then
-        storage.probe_count = (storage.probe_count or 1) - 1
-    end
 
     if position ~= last then
         queue[position] = queue[last]

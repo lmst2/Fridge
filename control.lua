@@ -102,13 +102,9 @@ local function track(entity)
                 bays = { entity },
                 full_freeze = true,
             }
-            if config.probes_on then
-                scheduler.queue_add {
-                    key = "probe:" .. key,
-                    kind = "probe",
-                    surface = surface_name,
-                }
-            end
+        end
+        if config.probes_on then
+            executor.probe_add { surface = surface_name }
         end
         return
     end
@@ -155,9 +151,7 @@ local function track(entity)
     end
 
     if config.probes_on then
-        scheduler.queue_add {
-            key = "probe:" .. entity.unit_number,
-            kind = "probe",
+        executor.probe_add {
             entity = entity,
             inventory = spec.inventory,
             uid = entity.unit_number,
@@ -193,7 +187,7 @@ local function OnEntityRemoved(event)
             end
         end
         if #bays == 0 then
-            scheduler.queue_remove("probe:" .. entry.key)
+            executor.probe_remove(entity.surface.name)
             scheduler.queue_remove(entry.key)
         else
             -- One fewer bay: re-walk so the entry's work drops to the smaller
@@ -206,7 +200,7 @@ local function OnEntityRemoved(event)
     local entry = scheduler.entry_for(entity.unit_number)
     if entry and entry.proxy and entry.proxy.valid then entry.proxy.destroy() end
     executor.forget(entity.unit_number)
-    scheduler.queue_remove("probe:" .. entity.unit_number)
+    executor.probe_remove(entity.unit_number)
     for _, key in pairs(scheduler.chunk_keys(entity.unit_number)) do
         scheduler.queue_remove(key)
     end
@@ -247,44 +241,34 @@ end
 local function OnTick(event)
     if config.freeze_rates == 1 then return end
     scheduler.tick(event.tick, executor.process_entry)
+    if config.probes_on then executor.run_probes(event.tick) end
 end
 
---- Match the probe population to config.probes_on.
+--- Match the probe ring to config.probes_on.
 --
--- Probes exist only while some item spoils too fast for the refresh rhythm to
--- promise discovery; the max-refresh-gap setting is part of that inequality,
--- so a runtime settings change can flip it either way. Keys are collected
--- before mutating, since queue_remove swaps entries around.
+-- probes_on only changes at load boundaries in practice (it depends on which
+-- prototypes can spoil), but a save from before the ring existed needs its
+-- tables created, and probe_add is idempotent, so re-syncing is always safe.
 local function sync_probes()
-    storage.probe_count = storage.probe_count or 0
+    storage.probes = storage.probes or {}
+    storage.probe_index = storage.probe_index or {}
     if not config.probes_on then
-        if storage.probe_count == 0 then return end
-        local keys = {}
-        for _, entry in pairs(storage.queue) do
-            if entry.kind == "probe" then keys[#keys + 1] = entry.key end
-        end
-        for _, key in pairs(keys) do scheduler.queue_remove(key) end
+        storage.probes, storage.probe_index = {}, {}
+        storage.probe_acc, storage.probe_cursor = 0, 1
         return
     end
 
-    local adds, covered = {}, {}
     for _, entry in pairs(storage.queue) do
         if entry.kind == "platform" then
-            covered[entry.key] = covered[entry.key] or true
-            adds[#adds + 1] = { key = "probe:" .. entry.key, kind = "probe",
-                                surface = entry.surface }
+            executor.probe_add { surface = entry.surface }
         elseif entry.inventory and entry.entity and entry.entity.valid then
-            local uid = entry.uid or entry.entity.unit_number
-            if not covered[uid] then
-                covered[uid] = true
-                adds[#adds + 1] = { key = "probe:" .. uid, kind = "probe",
-                                    entity = entry.entity, uid = uid,
-                                    inventory = entry.inventory }
-            end
+            executor.probe_add {
+                entity = entry.entity,
+                inventory = entry.inventory,
+                uid = entry.uid or entry.entity.unit_number,
+            }
         end
     end
-    -- queue_add already refuses keys that exist, so re-syncing is idempotent.
-    for _, add in pairs(adds) do scheduler.queue_add(add) end
 end
 
 --- @function OnSettingsChanged
