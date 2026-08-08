@@ -199,9 +199,9 @@ local function OnEntityRemoved(event)
 
     local entry = scheduler.entry_for(entity.unit_number)
     if entry and entry.proxy and entry.proxy.valid then entry.proxy.destroy() end
-    executor.forget(entity.unit_number)
     executor.probe_remove(entity.unit_number)
     for _, key in pairs(scheduler.chunk_keys(entity.unit_number)) do
+        executor.forget(key)
         scheduler.queue_remove(key)
     end
 end
@@ -249,6 +249,10 @@ end
 local function OnSurfaceRenamed(event)
     scheduler.rename_surface(event.old_name, event.new_name)
     executor.probe_rename_surface(event.old_name, event.new_name)
+    -- The hub's handles were cached under the old entry key; they are still
+    -- valid but unreachable there, so drop them and let the next walk
+    -- rebuild the small array under the new key.
+    executor.forget(scheduler.platform_key(event.old_name))
 end
 
 --- Match the probe ring to config.probes_on.

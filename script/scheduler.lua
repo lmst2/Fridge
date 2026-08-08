@@ -15,7 +15,7 @@
 --   key          unit_number, or "surface:<name>" for a platform hub
 --   kind         "container" | "warehouse" | "inserter" | "platform"
 --   entity       the container, inserter or hub
---   uid          the walked entity's unit_number, keys the handle cache
+--   uid          the walked entity's unit_number, links its probe
 --   proxy        power proxy (warehouse only)
 --   bays         freezing cargo bays granting capacity (platform only)
 --   surface      surface name (platform only)
@@ -310,24 +310,29 @@ function scheduler.rename_surface(old_name, new_name)
 
     local clash = storage.index[new_key]
     if clash then
-        -- Pathological: the new name already has a platform entry. Merge the
-        -- bays into it and drop the old entry rather than clobbering either.
-        local target = storage.queue[clash]
-        for _, bay in pairs(entry.bays) do
-            target.bays[#target.bays + 1] = bay
+        -- Pathological: some earlier holder of this name left an entry
+        -- behind. The renamed entry is the one whose timeline - last,
+        -- deadline, primed - is current, so IT survives: absorb the stale
+        -- holder's bays (contents_of prunes any dead ones) and drop it.
+        local holder = storage.queue[clash]
+        for _, bay in pairs(holder.bays) do
+            entry.bays[#entry.bays + 1] = bay
         end
-        scheduler.queue_remove(old_key)
-        scheduler.expedite(target, game.tick)
-        return
+        scheduler.queue_remove(new_key)
     end
 
+    -- Re-read the position: the removal above may have swapped the queue.
+    storage.index[new_key] = storage.index[old_key]
     storage.index[old_key] = nil
-    storage.index[new_key] = position
     entry.key = new_key
     entry.surface = new_name
     -- Heap pairs still carry the old key; they will surface as stale and be
     -- discarded, so give the entry a fresh pair under its new name.
     heap_push(entry.due, new_key)
+    if clash then
+        -- Absorbed bays change the capacity; re-walk promptly.
+        scheduler.expedite(entry, game.tick)
+    end
 end
 
 --- Remove an entry in constant time by swapping the last one into its place.
@@ -387,14 +392,21 @@ function scheduler.tick(tick, process)
         local entry = scheduler.entry_for(heap_keys[1])
         local live = entry and entry.due <= tick
 
+        local spent_allowance = false
         if live and credit <= 0 then
             if forced then break end
             forced = true
+            spent_allowance = true
         end
 
         heap_pop()
         if live then
-            credit = credit - process(entry, tick)
+            local cost = process(entry, tick)
+            credit = credit - cost
+            -- A visit that turned out free - a dead entity cleaning itself
+            -- up, a same-tick revisit - did no forced work; give the
+            -- allowance back so a real entry can still use it this tick.
+            if spent_allowance and cost <= 0 then forced = false end
         end
     end
 

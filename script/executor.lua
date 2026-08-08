@@ -29,29 +29,30 @@ local executor = {}
 -- Indexing an inventory (`inv[i]`) creates a fresh LuaItemStack userdata each
 -- time; measured, that creation is ~40% of a fused walk and all of its GC
 -- churn. A slot handle stays valid as long as its inventory does, so they are
--- built once per entity and reused across walks: 2.10 -> 1.04 us per slot.
+-- built once and reused across walks: 2.10 -> 1.04 us per slot.
 --
--- Keyed by unit_number, which the engine never reuses, so a replaced platform
--- hub (new unit number) can never collide with its predecessor's handles.
--- alive() drops dead entities before any walk, and a valid entity implies
--- valid handles. Module-local and rebuilt lazily after every load - handles
--- must never reach `storage`.
+-- Keyed by entry key - one array per slot range - and filled lazily INSIDE
+-- the walk, one slot as it is examined. That way creation is billed as part
+-- of the visit that needed it, a capped walk builds handles only as far as
+-- it actually reached, and no visit can build more than it walks, whichever
+-- chunk of a large container comes due first. alive() drops dead entities
+-- before any walk, and a valid entity implies valid handles. Module-local
+-- and rebuilt lazily after every load - handles must never reach `storage`.
 local stack_handles = {}
 
---- The per-slot handles for this inventory, grown to cover slot `hi`.
-local function stacks_for(uid, inv, hi)
-    local stacks = stack_handles[uid]
+--- The (lazily filled) handle array for one entry's slot range.
+local function stacks_for(key)
+    local stacks = stack_handles[key]
     if not stacks then
         stacks = {}
-        stack_handles[uid] = stacks
+        stack_handles[key] = stacks
     end
-    for i = #stacks + 1, hi do stacks[i] = inv[i] end
     return stacks
 end
 
---- Drop an entity's cached handles (it was removed, or a hub was replaced).
-function executor.forget(uid)
-    if uid then stack_handles[uid] = nil end
+--- Drop one entry's cached handles (its entity was removed or replaced).
+function executor.forget(key)
+    if key then stack_handles[key] = nil end
 end
 
 ---- Prototype cache ----
@@ -165,6 +166,10 @@ local function walk(inv, stacks, from, to, recover, tick, cap)
 
     for i = from, to do
         local stack = stacks[i]
+        if stack == nil then
+            stack = inv[i]
+            stacks[i] = stack
+        end
         if stack.valid_for_read then
             local spoils_at
             if by_quality then
@@ -243,9 +248,8 @@ local function contents_of(entry)
             hub = surface and surface.platform and surface.platform.hub
             entry.entity = hub
             -- A replaced hub is a new entity: its predecessor's slot handles
-            -- can never be valid again, so drop them with the old unit number.
-            executor.forget(entry.uid)
-            entry.uid = hub and hub.unit_number or nil
+            -- can never be valid again.
+            executor.forget(entry.key)
         end
         if not hub then return nil end
         return hub.get_inventory(defines.inventory.hub_main),
@@ -273,7 +277,7 @@ local function alive(entry)
             entry.proxy.destroy()
         end
     end
-    executor.forget(entry.uid)
+    executor.forget(entry.key)
     scheduler.queue_remove(entry.key)
     return false
 end
@@ -346,15 +350,8 @@ local function process(entry, tick)
         return 0
     end
 
-    -- Derived lazily so entries from older saves pick it up on first visit.
-    local uid = entry.uid
-    if not uid then
-        uid = entry.entity.unit_number
-        entry.uid = uid
-    end
-
     local to = entry.to or #inv
-    local scanned, deadline = walk(inv, stacks_for(uid, inv, to),
+    local scanned, deadline = walk(inv, stacks_for(entry.key),
                                    entry.from or 1, to,
                                    recover, tick, cap)
     scheduler.set_work(entry, scanned)
