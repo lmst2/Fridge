@@ -167,6 +167,24 @@ local function OnEntityCreated(event)
     if entity and entity.valid then track(entity) end
 end
 
+--- @function OnTrainCreated
+-- Rolling stock can appear without any build event. Subsurface carries a train
+-- through a tunnel by create_entity-ing a copy of each carriage on the far
+-- surface and destroy()-ing the original, and neither half raises one, so a
+-- preservation wagon came out the other end untracked and silently stopped
+-- preserving its cargo from its first transit onwards.
+local function OnTrainCreated(event)
+    local train = event.train
+    if not (train and train.valid) then return end
+    for _, carriage in pairs(train.carriages) do
+        -- Chunk 0 keeps the bare unit_number, so that is what to test for.
+        if carriage.valid and TRACKED[carriage.name]
+            and not scheduler.entry_for(carriage.unit_number) then
+            track(carriage)
+        end
+    end
+end
+
 --- @function OnEntityRemoved
 local function OnEntityRemoved(event)
     local entity = event.entity
@@ -384,6 +402,11 @@ local function init_events()
     script.on_event(defines.events.on_gui_closed, OnPlayerMovedItems)
 
     script.on_event(defines.events.on_tick, OnTick)
+    -- The only notice a mod gets that rolling stock exists when whatever built
+    -- it raised no build event. Unfiltered: the event carries no entity to
+    -- filter on, and the handler drops a train of untracked carriages in one
+    -- lookup each.
+    script.on_event(defines.events.on_train_created, OnTrainCreated)
     script.on_event(defines.events.on_surface_renamed, OnSurfaceRenamed)
     script.on_event(defines.events.on_runtime_mod_setting_changed, OnSettingsChanged)
 end

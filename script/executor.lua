@@ -63,11 +63,13 @@ end
 local spoil_ticks = {}
 local quality_changes_spoil = false
 local spoilable = {}   -- name -> boolean, for the probes' contents filter
+local bay_bonus = {}   -- bay prototype -> quality name -> slots it grants
 
 function executor.init_cache()
     spoil_ticks = {}
     stack_handles = {}
     spoilable = {}
+    bay_bonus = {}
     -- Vanilla qualities leave spoil time alone, so the cache can be keyed by
     -- item name and the stack's quality never read. A mod that does change it
     -- forces the slower, fully correct path.
@@ -224,6 +226,46 @@ local function recovery_for(entry, elapsed, tick)
     return elapsed - aged
 end
 
+--- How many hub slots one freezing bay grants - the slots it must keep frozen.
+--
+-- A cargo bay's inventory_size_bonus scales with the bay's own quality: a
+-- legendary Freezing Cargo Bay hands the hub 50 slots where a normal one hands
+-- it the 20 the setting asks for. Charging every bay the flat setting therefore
+-- left most of a quality bay's own capacity thawing in a hub the player had
+-- built specifically to keep it frozen.
+--
+-- Factorio 2.1 answers this outright. 2.0 scales the bonus identically but
+-- exposes nothing that reads it, so fall back there to the engine's own rule -
+-- a quality level adds 30% of the base, rounded down - which was checked
+-- against measured hub growth for bonuses of 7, 13, 20 and 200 at every quality
+-- on both branches. Only 2.0 ever takes that path, and 2.0 no longer changes.
+--
+-- Cached per prototype and quality alongside the rest of the prototype data:
+-- none of it can change without a reload.
+local function bay_capacity(bay)
+    local quality = bay.quality
+    local name = quality and quality.name or "normal"
+    local by_quality = bay_bonus[bay.name]
+    if not by_quality then
+        by_quality = {}
+        bay_bonus[bay.name] = by_quality
+    end
+    local bonus = by_quality[name]
+    if not bonus then
+        local ok, granted = pcall(function()
+            return bay.prototype.get_inventory_size_bonus(name)
+        end)
+        if ok and granted then
+            bonus = granted
+        else
+            bonus = floor(config.platform_capacity
+                          * (1 + 0.3 * ((quality and quality.level) or 0)))
+        end
+        by_quality[name] = bonus
+    end
+    return bonus
+end
+
 --- Find what an entry preserves, and how much of it.
 -- @return LuaInventory|nil, number|nil The inventory and any stack cap, or nil
 --   if this entry has nothing to do right now
@@ -252,8 +294,12 @@ local function contents_of(entry)
             executor.forget(entry.key)
         end
         if not hub then return nil end
-        return hub.get_inventory(defines.inventory.hub_main),
-               #bays * config.platform_capacity
+        -- Every survivor is valid by now, and each one is worth whatever its
+        -- own quality granted the hub, so the cap matches the slots that were
+        -- actually added.
+        local capacity = 0
+        for i = 1, #bays do capacity = capacity + bay_capacity(bays[i]) end
+        return hub.get_inventory(defines.inventory.hub_main), capacity
     end
 
     if kind == "warehouse" and entry.proxy.energy <= config.WAREHOUSE_ENERGY then
