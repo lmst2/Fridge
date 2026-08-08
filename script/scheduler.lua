@@ -297,6 +297,39 @@ function scheduler.queue_add(entry)
     schedule_at(entry, now, config.PERIOD_MIN + stagger)
 end
 
+--- Follow a surface rename: platform entries are keyed by surface name.
+-- Without this, building a bay after a rename grew a SECOND entry for the
+-- same hub - each counting part of the capacity, both walking from slot 1,
+-- the front slots preserved twice and the back ones left to rot.
+function scheduler.rename_surface(old_name, new_name)
+    local old_key = scheduler.platform_key(old_name)
+    local position = storage.index[old_key]
+    if not position then return end
+    local entry = storage.queue[position]
+    local new_key = scheduler.platform_key(new_name)
+
+    local clash = storage.index[new_key]
+    if clash then
+        -- Pathological: the new name already has a platform entry. Merge the
+        -- bays into it and drop the old entry rather than clobbering either.
+        local target = storage.queue[clash]
+        for _, bay in pairs(entry.bays) do
+            target.bays[#target.bays + 1] = bay
+        end
+        scheduler.queue_remove(old_key)
+        scheduler.expedite(target, game.tick)
+        return
+    end
+
+    storage.index[old_key] = nil
+    storage.index[new_key] = position
+    entry.key = new_key
+    entry.surface = new_name
+    -- Heap pairs still carry the old key; they will surface as stale and be
+    -- discarded, so give the entry a fresh pair under its new name.
+    heap_push(entry.due, new_key)
+end
+
 --- Remove an entry in constant time by swapping the last one into its place.
 -- Anything left for it in the heap is discarded when it surfaces.
 function scheduler.queue_remove(key)
@@ -333,6 +366,7 @@ function scheduler.tick(tick, process)
     if credit > storage.demand then credit = storage.demand end
 
     local dues = storage.heap_due
+    local heap_keys = storage.heap_key
 
     -- The schedule is the requirement; the budget only decides how smoothly it
     -- is met. So when the credit runs out one entry is still processed, and
@@ -344,14 +378,22 @@ function scheduler.tick(tick, process)
     local forced = false
 
     while dues[1] and dues[1] <= tick do
-        if credit <= 0 then
+        -- Peek before popping. A stale pair - anything rescheduled since it
+        -- was pushed - is discarded for free; only a live entry may spend
+        -- credit or the forced allowance, and once both are gone the live
+        -- pair is left in the heap for the next tick. Burning the allowance
+        -- on a discard let a wave of expedites, which mass-produce stale
+        -- pairs, idle whole ticks away right after an expensive visit.
+        local entry = scheduler.entry_for(heap_keys[1])
+        local live = entry and entry.due <= tick
+
+        if live and credit <= 0 then
             if forced then break end
             forced = true
         end
 
-        local entry = scheduler.entry_for(heap_pop())
-        -- Anything rescheduled since it was pushed left a stale pair behind.
-        if entry and entry.due <= tick then
+        heap_pop()
+        if live then
             credit = credit - process(entry, tick)
         end
     end

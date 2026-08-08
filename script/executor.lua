@@ -443,6 +443,22 @@ function executor.probe_remove(key)
     end
 end
 
+--- Follow a surface rename for the probe watching it, if any.
+function executor.probe_rename_surface(old_name, new_name)
+    local index = storage.probe_index
+    if not index then return end
+    local position = index[old_name]
+    if not position then return end
+    if index[new_name] then
+        -- The new name is already watched; one watcher is enough.
+        executor.probe_remove(old_name)
+        return
+    end
+    index[old_name] = nil
+    index[new_name] = position
+    storage.probes[position].surface = new_name
+end
+
 --- Ask one probe its question. Returns false when its target is gone.
 local function check_probe(probe, tick)
     local count

@@ -244,6 +244,13 @@ local function OnTick(event)
     if config.probes_on then executor.run_probes(event.tick) end
 end
 
+--- @function OnSurfaceRenamed
+-- Platform entries and their probes are keyed by surface name; follow it.
+local function OnSurfaceRenamed(event)
+    scheduler.rename_surface(event.old_name, event.new_name)
+    executor.probe_rename_surface(event.old_name, event.new_name)
+end
+
 --- Match the probe ring to config.probes_on.
 --
 -- probes_on only changes at load boundaries in practice (it depends on which
@@ -369,6 +376,7 @@ local function init_events()
     script.on_event(defines.events.on_gui_closed, OnPlayerMovedItems)
 
     script.on_event(defines.events.on_tick, OnTick)
+    script.on_event(defines.events.on_surface_renamed, OnSurfaceRenamed)
     script.on_event(defines.events.on_runtime_mod_setting_changed, OnSettingsChanged)
 end
 
