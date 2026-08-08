@@ -188,6 +188,7 @@ local function OnEntityRemoved(event)
         end
         if #bays == 0 then
             executor.probe_remove(entity.surface.name)
+            executor.forget(entry.key)
             scheduler.queue_remove(entry.key)
         else
             -- One fewer bay: re-walk so the entry's work drops to the smaller
@@ -249,10 +250,13 @@ end
 local function OnSurfaceRenamed(event)
     scheduler.rename_surface(event.old_name, event.new_name)
     executor.probe_rename_surface(event.old_name, event.new_name)
-    -- The hub's handles were cached under the old entry key; they are still
-    -- valid but unreachable there, so drop them and let the next walk
-    -- rebuild the small array under the new key.
+    -- The hub's handles were cached under the old entry key - still valid but
+    -- unreachable there - and whatever DIED holding the new name may have
+    -- left its handles under the key we are about to occupy: stale handles
+    -- read valid_for_read=false and silently skip every slot. Drop both
+    -- sides; the next walk rebuilds the small array.
     executor.forget(scheduler.platform_key(event.old_name))
+    executor.forget(scheduler.platform_key(event.new_name))
 end
 
 --- Match the probe ring to config.probes_on.

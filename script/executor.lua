@@ -444,13 +444,14 @@ end
 function executor.probe_rename_surface(old_name, new_name)
     local index = storage.probe_index
     if not index then return end
-    local position = index[old_name]
-    if not position then return end
+    if not index[old_name] then return end
     if index[new_name] then
-        -- The new name is already watched; one watcher is enough.
-        executor.probe_remove(old_name)
-        return
+        -- Same policy as the queue merge: the renamed probe's baseline is
+        -- the current one, so the stale holder of the name goes.
+        executor.probe_remove(new_name)
     end
+    -- Re-read the position: the removal above may have swapped the ring.
+    local position = index[old_name]
     index[old_name] = nil
     index[new_name] = position
     storage.probes[position].surface = new_name

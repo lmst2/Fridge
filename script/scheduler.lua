@@ -403,10 +403,18 @@ function scheduler.tick(tick, process)
         if live then
             local cost = process(entry, tick)
             credit = credit - cost
-            -- A visit that turned out free - a dead entity cleaning itself
-            -- up, a same-tick revisit - did no forced work; give the
-            -- allowance back so a real entry can still use it this tick.
-            if spent_allowance and cost <= 0 then forced = false end
+            if cost <= 0 then
+                -- A visit that turned out free - a dead entity cleaning
+                -- itself up, a same-tick revisit - did no forced work; give
+                -- the allowance back so a real entry can still use it.
+                if spent_allowance then forced = false end
+            elseif credit <= 0 then
+                -- Whether this was the allowed forced visit or the ordinary
+                -- one that ran the credit out, the tick's one-entry overrun
+                -- is now spent - marking it here is what makes "the credit
+                -- it had plus one entry" a true bound rather than a wish.
+                forced = true
+            end
         end
     end
 
