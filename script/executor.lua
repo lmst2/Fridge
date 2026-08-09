@@ -40,6 +40,22 @@ local executor = {}
 -- and rebuilt lazily after every load - handles must never reach `storage`.
 local stack_handles = {}
 
+-- LuaInventory handles, same lifecycle, same keys (entry.key for walk
+-- entries, unit_number for container probes). Each get_inventory call is a
+-- method LOOKUP, and in this engine every method lookup mints a fresh
+-- ~90-byte closure besides the ~60-byte inventory userdata; cached, the
+-- steady state pays neither.
+local inv_handles = {}
+
+--- The cached inventory handle for this key, revalidated on every use.
+local function inv_for(key, entity, inventory)
+    local inv = inv_handles[key]
+    if inv and inv.valid then return inv end
+    inv = entity.get_inventory(inventory)
+    inv_handles[key] = inv
+    return inv
+end
+
 --- The (lazily filled) handle array for one entry's slot range.
 local function stacks_for(key)
     local stacks = stack_handles[key]
@@ -52,37 +68,30 @@ end
 
 --- Drop one entry's cached handles (its entity was removed or replaced).
 function executor.forget(key)
-    if key then stack_handles[key] = nil end
+    if key then
+        stack_handles[key] = nil
+        inv_handles[key] = nil
+    end
 end
 
 ---- Prototype cache ----
 
--- Rebuilt on every load and deliberately outside `storage`: prototype data
--- cannot change without one. Re-reading `stack.prototype` and calling
--- get_spoil_ticks() per stack was the largest cost in the original sweep.
-local spoil_ticks = {}
-local quality_changes_spoil = false
 local spoilable = {}   -- name -> boolean, for the probes' contents filter
 local bay_bonus = {}   -- bay prototype -> quality name -> slots it grants
 
 function executor.init_cache()
-    spoil_ticks = {}
     stack_handles = {}
+    inv_handles = {}
     spoilable = {}
     bay_bonus = {}
-    -- Vanilla qualities leave spoil time alone, so the cache can be keyed by
-    -- item name and the stack's quality never read. A mod that does change it
-    -- forces the slower, fully correct path.
     local worst_quality = 1
-    local quality_varies = false
     local ok = pcall(function()
         for _, quality in pairs(prototypes.quality) do
             local multiplier = quality.spoil_ticks_multiplier
             if multiplier < worst_quality then worst_quality = multiplier end
-            if multiplier ~= 1 then quality_varies = true end
         end
     end)
-    quality_changes_spoil = (not ok) or quality_varies
+    if not ok then worst_quality = 1 end
 
     -- The shortest spoil life in this game, quality-adjusted: the number the
     -- config derives the discovery guarantee from. nil when nothing spoils.
@@ -102,39 +111,32 @@ end
 ---- Preserving stacks ----
 
 --- Push one stack's spoil time back, never past brand new.
+--
+-- The "brand new" ceiling needs the item's full spoil life - which depends
+-- on its prototype AND its quality. Asking for either allocates: reading
+-- `stack.prototype` or `stack.quality` mints a ~60-byte userdata per call,
+-- which at scale made the garbage collector sweep the whole retained handle
+-- set every few hundred ticks. The life is instead derived from two FREE
+-- number reads: spoil_percent tells how far along the item is, so
+-- remaining / (1 - percent) IS the full life, exact across every quality
+-- and mod (verified to zero error against get_spoil_ticks). No prototype
+-- cache, no quality detection, no per-slot allocation.
+--
 -- @param stack LuaItemStack, already known to be valid_for_read
 -- @return number|nil The tick it will now spoil on, or nil if it cannot spoil
 local function preserve_stack(stack, recover, tick)
     local current = stack.spoil_tick
     if current <= 0 then return nil end
 
-    local name = stack.name
-    local base
-    if quality_changes_spoil then
-        local by_quality = spoil_ticks[name]
-        if not by_quality then
-            by_quality = {}
-            spoil_ticks[name] = by_quality
+    local share = 1 - stack.spoil_percent
+    if share > 0 then
+        local limit = tick + floor((current - tick) / share + 0.5)
+            - FRESHNESS_MARGIN
+        if current < limit then
+            local extended = current + recover
+            current = extended < limit and extended or limit
+            stack.spoil_tick = current
         end
-        local quality = stack.quality.name
-        base = by_quality[quality]
-        if not base then
-            base = stack.prototype.get_spoil_ticks(quality)
-            by_quality[quality] = base
-        end
-    else
-        base = spoil_ticks[name]
-        if not base then
-            base = stack.prototype.get_spoil_ticks()
-            spoil_ticks[name] = base
-        end
-    end
-
-    local limit = tick + base - FRESHNESS_MARGIN
-    if current < limit then
-        local extended = current + recover
-        current = extended < limit and extended or limit
-        stack.spoil_tick = current
     end
     return current
 end
@@ -161,9 +163,8 @@ local function walk(inv, stacks, from, to, recover, tick, cap)
 
     -- The body of preserve_stack, inlined. A Lua call per slot measured at 39%
     -- of this loop's total cost - the walk is the one place in the mod where
-    -- that is worth eighteen duplicated lines. The quality-aware path is rare
-    -- enough to stay a call.
-    local cache, by_quality = spoil_ticks, quality_changes_spoil
+    -- that is worth the duplicated lines. See preserve_stack for why the
+    -- ceiling comes from spoil_percent and not the prototype.
     local ceiling = tick - FRESHNESS_MARGIN
 
     for i = from, to do
@@ -173,27 +174,20 @@ local function walk(inv, stacks, from, to, recover, tick, cap)
             stacks[i] = stack
         end
         if stack.valid_for_read then
-            local spoils_at
-            if by_quality then
-                spoils_at = preserve_stack(stack, recover, tick)
-            else
-                spoils_at = stack.spoil_tick
-                if spoils_at > 0 then
-                    local name = stack.name
-                    local base = cache[name]
-                    if not base then
-                        base = stack.prototype.get_spoil_ticks()
-                        cache[name] = base
-                    end
-                    local limit = ceiling + base
+            local spoils_at = stack.spoil_tick
+            if spoils_at > 0 then
+                local share = 1 - stack.spoil_percent
+                if share > 0 then
+                    local limit = ceiling
+                        + floor((spoils_at - tick) / share + 0.5)
                     if spoils_at < limit then
                         local extended = spoils_at + recover
                         spoils_at = extended < limit and extended or limit
                         stack.spoil_tick = spoils_at
                     end
-                else
-                    spoils_at = nil
                 end
+            else
+                spoils_at = nil
             end
             if spoils_at then
                 if not deadline or spoils_at < deadline then
@@ -299,14 +293,14 @@ local function contents_of(entry)
         -- actually added.
         local capacity = 0
         for i = 1, #bays do capacity = capacity + bay_capacity(bays[i]) end
-        return hub.get_inventory(defines.inventory.hub_main), capacity
+        return inv_for(entry.key, hub, defines.inventory.hub_main), capacity
     end
 
     if kind == "warehouse" and entry.proxy.energy <= config.WAREHOUSE_ENERGY then
         return nil  -- unpowered: its contents spoil normally
     end
 
-    return entry.entity.get_inventory(entry.inventory)
+    return inv_for(entry.key, entry.entity, entry.inventory)
 end
 
 --- Is this entry still real? Cleans up after itself if not.
@@ -469,6 +463,7 @@ end
 
 --- Drop the probe watching this unit_number or surface name, if any.
 function executor.probe_remove(key)
+    inv_handles[key] = nil
     local probes, index = storage.probes, storage.probe_index
     if not probes then return end
     local position = index[key]
@@ -535,7 +530,7 @@ local function check_probe(probe, tick)
     else
         local entity = probe.entity
         if not (entity and entity.valid) then return false end
-        count = entity.get_inventory(probe.inventory).get_item_count()
+        count = inv_for(probe.uid, entity, probe.inventory).get_item_count()
         if probe.baseline and count > probe.baseline then
             -- Every chunk, staggered a tick apart: the newcomer could sit in
             -- any slot, and the merge that absorbed it could have shifted any
