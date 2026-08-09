@@ -1,4 +1,21 @@
 ---------------------------------------------------------------------------------------------------
+Version: 1.0.0
+Date: 2026-08-08
+  Major Features:
+    - Rebuilt how preservation is scheduled. Instead of sweeping the whole factory on one tick, the mod now visits each freezer when its contents actually need it, spreading the work evenly. Large bases no longer stutter, and the mod keeps up as the base grows.
+  Features:
+    - Added startup settings for how much preservation work runs per tick, how often items are refreshed, and how quickly the mod notices items that machines insert.
+  Optimizations:
+    - Cut the per-item work of a preservation pass, and the garbage it produced, so the mod costs less on every tick and no longer builds up pauses on large bases.
+  Bugfixes:
+    - Fixed higher-quality Freezing Cargo Bays only keeping a standard bay's worth of hub slots frozen, so items in the extra slots they granted could still spoil.
+    - Fixed the Freezing Warehouse showing as cold and losing power on planets that require heating. A heat pipe run to any side of the building now keeps it working; an unheated warehouse still freezes, as it should.
+    - Fixed preservation wagons silently stopping preservation after being carried through a mod-made tunnel.
+    - Fixed the Tiberium fuel cell never replacing the uranium fuel cell in the refrigerator recipe, which had never worked because the mod's name was misspelled in the check.
+    - Fixed preservation inserters being lost from saves upgraded from 0.2.x, where the entity was renamed without a migration.
+    - Fixed a migration that could crash on load without Space Age, and that handed out the refrigerator recipe without its research when the mod was added to an existing save.
+    - Fixed the English names of the refrigerator and its logistic variants showing raw internal labels, including the misspelled "refrigerater".
+---------------------------------------------------------------------------------------------------
 Version: 0.4.0
 Date: 2026-07-24
   Bugfixes:
