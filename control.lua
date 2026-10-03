@@ -40,7 +40,8 @@ end
 describe({ "refrigerater",
            "logistic-refrigerater-passive-provider",
            "logistic-refrigerater-requester",
-           "logistic-refrigerater-buffer" },
+           "logistic-refrigerater-buffer",
+           "logistic-refrigerater-storage" },
          { kind = "container", inventory = defines.inventory.chest })
 
 describe({ "preservation-wagon" },

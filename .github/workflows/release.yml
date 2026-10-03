@@ -166,7 +166,7 @@ jobs:
               --exclude='./.gitignore' --exclude='*.zip' \
               --exclude='./commits.txt' --exclude='./ai.txt' --exclude='./user_prompt.txt' \
               --exclude='./attributed_commits.txt' --exclude='./contributors.txt' \
-              --exclude='./drafts.txt' \
+              --exclude='./drafts.txt' --exclude='./spec' --exclude='./.busted' \
               -cf - . | tar -C "$stage" -xf -
             rm -f "$stage/Changelog.txt"
             python3 - "$stage/info.json" "$target" "$base" "$VER" <<'PYEOF'

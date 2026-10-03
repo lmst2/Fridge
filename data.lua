@@ -93,9 +93,10 @@ refrigerator.trash_inventory_size = nil
 --[[ ------------------------- Logistic Fridges ------------------------- ]]--
 
 local logistic_fridge_types = {
-{name = "logistic-refrigerater-passive-provider", color = {r=0.8, g=0.2, b=0.2}, logistic_mode = "passive-provider", type = "logistic-container", trash_inventory_size = 0},
-{name = "logistic-refrigerater-requester", color = {r=0.2, g=0.2, b=0.8}, logistic_mode = "requester", type = "logistic-container", trash_inventory_size = 10},
-{name = "logistic-refrigerater-buffer", color = {r=0.2, g=0.8, b=0.2}, logistic_mode = "buffer", type = "logistic-container", trash_inventory_size = 10}
+{name = "logistic-refrigerater-passive-provider", color = {r=0.8, g=0.2, b=0.2}, logistic_mode = "passive-provider", type = "logistic-container", trash_inventory_size = 0, chest = "passive-provider-chest"},
+{name = "logistic-refrigerater-requester", color = {r=0.2, g=0.2, b=0.8}, logistic_mode = "requester", type = "logistic-container", trash_inventory_size = 10, chest = "requester-chest"},
+{name = "logistic-refrigerater-buffer", color = {r=0.2, g=0.8, b=0.2}, logistic_mode = "buffer", type = "logistic-container", trash_inventory_size = 10, chest = "buffer-chest"},
+{name = "logistic-refrigerater-storage", color = {r=0.8, g=0.8, b=0.2}, logistic_mode = "storage", type = "logistic-container", trash_inventory_size = 0, chest = "storage-chest", max_logistic_slots = 1}
 }
 
 local logistic_fridges = {}
@@ -104,6 +105,7 @@ local logistic_fridge = table.deepcopy(refrigerator)
 logistic_fridge.name = fridge_type.name
 logistic_fridge.logistic_mode = fridge_type.logistic_mode
 logistic_fridge.trash_inventory_size = fridge_type.trash_inventory_size
+logistic_fridge.max_logistic_slots = fridge_type.max_logistic_slots
 logistic_fridge.minable.result = fridge_type.name
 logistic_fridge.icons = {
   {
@@ -412,6 +414,33 @@ end
 
 
 --[[ ============================================================================
+ Fluid Definitions
+============================================================================ ]]--
+
+-- With Space Age, refrigeration is an Aquilo technology: its cooling starts as
+-- an HFC refrigerant that only the cryogenic plant can make
+local hfc = nil
+if mods["space-age"] then
+  local fluorine = data.raw.fluid["fluorine"]
+  hfc = {
+      type = "fluid",
+      name = "hfc",
+      icons = {{
+          icon = fluorine.icon,
+          -- Base's barrel recipe generator needs an explicit size on every icon layer
+          icon_size = fluorine.icon_size or 64,
+          tint = {r=0.6, g=0.8, b=1.0, a=0.8}
+      }},
+      subgroup = "fluid",
+      order = "b[new-fluid]-e[aquilo]-z[hfc]",
+      default_temperature = fluorine.default_temperature,
+      base_color = {r=0.6, g=0.8, b=1.0},
+      flow_color = {r=0.8, g=0.9, b=1.0}
+  }
+end
+
+
+--[[ ============================================================================
  Item Definitions
 ============================================================================ ]]--
 
@@ -551,6 +580,18 @@ if mods["space-age"] then
       place_result = "preservation-stack-inserter",
       stack_size = 50
   })
+  table.insert(items, {
+      type = "item",
+      name = "sealed-cooling-coil",
+      icons = {{
+          icon = data.raw.item["copper-cable"].icon,
+          icon_size = data.raw.item["copper-cable"].icon_size,
+          tint = {r=0.6, g=0.8, b=1.0, a=0.8}
+      }},
+      subgroup = "intermediate-product",
+      order = "z[preservation]-a[sealed-cooling-coil]",
+      stack_size = 50
+  })
     if has_unloading_bay then
     table.insert(items, {
       type = "item",
@@ -576,19 +617,40 @@ end
  Recipe Definitions
 ============================================================================ ]]--
 
+local refrigerator_ingredients = mods["space-age"] and {
+  {type = "item", name = "sealed-cooling-coil", amount = 1},
+  {type = "item", name = "electric-engine-unit", amount = 1},
+  {type = "item", name = "iron-plate", amount = 10}
+} or {
+  {type = "item", name = "steel-chest", amount = 1},
+  {type = "item", name = "electric-engine-unit", amount = 1},
+  {type = "item", name = "processing-unit", amount = 1},
+  {type = "item", name = energy_cell, amount = 1},
+  {type = "item", name = "plastic-bar", amount = 10}
+}
+
+-- With Space Age a logistic fridge is built from scratch around its matching
+-- chest, rather than by upgrading a refrigerator
+local function logistic_fridge_ingredients(fridge_type)
+  if not mods["space-age"] then
+    return {
+        {type = "item", name = "refrigerater", amount = 1},
+        {type = "item", name = "processing-unit", amount = 1},
+        {type = "item", name = "advanced-circuit", amount = 2}
+    }
+  end
+  local ingredients = table.deepcopy(refrigerator_ingredients)
+  table.insert(ingredients, {type = "item", name = fridge_type.chest, amount = 1})
+  return ingredients
+end
+
 local recipes = {
   -- Basic refrigerator
   {
       type = "recipe",
       name = "refrigerater",
       enabled = false,
-      ingredients = {
-          {type = "item", name = "steel-chest", amount = 1},
-          {type = "item", name = "electric-engine-unit", amount = 1},
-          {type = "item", name = "processing-unit", amount = 1},
-          {type = "item", name = energy_cell, amount = 1},
-          {type = "item", name = "plastic-bar", amount = 10}
-      },
+      ingredients = refrigerator_ingredients,
       results = {{type = "item", name = "refrigerater", amount = 1}}
   },
 
@@ -668,11 +730,7 @@ for _, fridge_type in pairs(logistic_fridge_types) do
       type = "recipe",
       name = fridge_type.name,
       enabled = false,
-      ingredients = {
-          {type = "item", name = "refrigerater", amount = 1},
-          {type = "item", name = "processing-unit", amount = 1},
-          {type = "item", name = "advanced-circuit", amount = 2}
-      },
+      ingredients = logistic_fridge_ingredients(fridge_type),
       results = {{type = "item", name = fridge_type.name, amount = 1}}
   })
 end
@@ -701,6 +759,63 @@ if mods["space-age"] then
       },
       results = {{type = "item", name = "preservation-stack-inserter", amount = 1}}
   })
+  table.insert(recipes, {
+      type = "recipe",
+      name = "hfc",
+      category = "cryogenics",
+      -- Fluid recipes otherwise inherit the fluid's subgroup, which sits in the Fluids tab
+      subgroup = "aquilo-processes",
+      order = "b[fluoroketone]-c[hfc]",
+      -- Aquilo's 300 hPa is unique among surfaces, so this pins HFC to Aquilo
+      surface_conditions = {{property = "pressure", min = 300, max = 300}},
+      enabled = false,
+      energy_required = 2,
+      ingredients = {
+          {type = "fluid", name = "fluorine", amount = 20},
+          {type = "fluid", name = "petroleum-gas", amount = 30}
+      },
+      results = {{type = "fluid", name = "hfc", amount = 50}}
+  })
+  table.insert(recipes, {
+      type = "recipe",
+      name = "sealed-cooling-coil",
+      category = "cryogenics-or-assembling",
+      enabled = false,
+      energy_required = 5,
+      ingredients = {
+          {type = "fluid", name = "hfc", amount = 50},
+          {type = "item", name = "copper-plate", amount = 5},
+          {type = "item", name = "plastic-bar", amount = 2}
+      },
+      results = {{type = "item", name = "sealed-cooling-coil", amount = 1}}
+  })
+  local function fluid_icon_layer(name, scale, shift)
+      local fluid = data.raw.fluid[name]
+      return {icon = fluid.icon, icon_size = fluid.icon_size or 64, scale = scale, shift = shift}
+  end
+  -- Twice basic oil processing's yield, as a reward for shipping crude to Aquilo
+  table.insert(recipes, {
+      type = "recipe",
+      name = "cryogenic-oil-processing",
+      category = "cryogenics",
+      subgroup = "fluid-recipes",
+      order = "a[oil-processing]-d[cryogenic-oil-processing]",
+      -- Like basic oil processing: without this the recipe is shown as petroleum gas itself
+      main_product = "",
+      icons = {
+          fluid_icon_layer("crude-oil", 0.3, {-8, -8}),
+          fluid_icon_layer("ammonia", 0.3, {8, -8}),
+          fluid_icon_layer("petroleum-gas", 0.4, {0, 4})
+      },
+      enabled = false,
+      energy_required = 5,
+      allow_productivity = true,
+      ingredients = {
+          {type = "fluid", name = "crude-oil", amount = 100},
+          {type = "fluid", name = "ammonia", amount = 50}
+      },
+      results = {{type = "fluid", name = "petroleum-gas", amount = 90}}
+  })
   if has_unloading_bay then
   table.insert(recipes, {
       type = "recipe",
@@ -720,13 +835,25 @@ end
  Technology Definitions
 ============================================================================ ]]--
 
-local ingredLR = mods["space-age"] and {
+-- Everything built on refrigeration costs at least this, so nothing that
+-- preserves food can be researched before reaching Aquilo
+local ingredRF = mods["space-age"] and {
   {"automation-science-pack", 1},
   {"logistic-science-pack", 1},
   {"chemical-science-pack", 1},
   {"production-science-pack", 1},
-  {"agricultural-science-pack", 1}
+  {"utility-science-pack", 1},
+  {"space-science-pack", 1},
+  {"metallurgic-science-pack", 1},
+  {"agricultural-science-pack", 1},
+  {"electromagnetic-science-pack", 1},
+  {"cryogenic-science-pack", 1}
 } or {
+  {"automation-science-pack", 1},
+  {"logistic-science-pack", 1}
+}
+
+local ingredLR = mods["space-age"] and ingredRF or {
   {"automation-science-pack", 1},
   {"logistic-science-pack", 1},
   {"chemical-science-pack", 1},
@@ -764,6 +891,21 @@ if mods["space-age"] then
   table.insert(inserter_unlocks, {type = "unlock-recipe", recipe = "preservation-stack-inserter"})
 end
 
+local refrigerator_unlocks = {
+  {type = "unlock-recipe", recipe = "refrigerater"}
+}
+local refrigerator_prerequisites = {"electric-engine", "processing-unit", "plastics"}
+if mods["space-age"] then
+  table.insert(refrigerator_unlocks, 1, {type = "unlock-recipe", recipe = "hfc"})
+  table.insert(refrigerator_unlocks, 2, {type = "unlock-recipe", recipe = "sealed-cooling-coil"})
+  table.insert(refrigerator_unlocks, {type = "unlock-recipe", recipe = "cryogenic-oil-processing"})
+  -- The cryogenic plant tech does not lead to the cryogenic or agricultural
+  -- packs this costs, so require those explicitly
+  table.insert(refrigerator_prerequisites, "cryogenic-plant")
+  table.insert(refrigerator_prerequisites, "cryogenic-science-pack")
+  table.insert(refrigerator_prerequisites, "agricultural-science-pack")
+end
+
 local technologies = {
   -- Basic refrigerator
   {
@@ -773,16 +915,11 @@ local technologies = {
           icon = "__Fridge__/graphics/icon/refrigerater.png",
           icon_size = 64
       }},
-      prerequisites = {"electric-engine", "processing-unit", "plastics"},
-      effects = {
-          {type = "unlock-recipe", recipe = "refrigerater"}
-      },
+      prerequisites = refrigerator_prerequisites,
+      effects = refrigerator_unlocks,
       unit = {
           count = 50,
-          ingredients = {
-              {"automation-science-pack", 1},
-              {"logistic-science-pack", 1}
-          },
+          ingredients = table.deepcopy(ingredRF),
           time = 30
       }
   },
@@ -797,11 +934,12 @@ local technologies = {
       effects = {
           {type = "unlock-recipe", recipe = "logistic-refrigerater-passive-provider"},
           {type = "unlock-recipe", recipe = "logistic-refrigerater-requester"},
-          {type = "unlock-recipe", recipe = "logistic-refrigerater-buffer"}
+          {type = "unlock-recipe", recipe = "logistic-refrigerater-buffer"},
+          {type = "unlock-recipe", recipe = "logistic-refrigerater-storage"}
       },
       unit = {
           count = 200,
-          ingredients = ingredLR,
+          ingredients = table.deepcopy(ingredLR),
           time = 30
       }
   },
@@ -838,9 +976,9 @@ local technologies = {
       },
       unit = {
           count = 100,
-          ingredients = {
+          ingredients = mods["space-age"] and table.deepcopy(ingredRF) or {
               {"automation-science-pack", 1},
-              {"logistic-science-pack", 1}, 
+              {"logistic-science-pack", 1},
               {"chemical-science-pack", 1},
               {"production-science-pack", 1}
           },
@@ -862,10 +1000,7 @@ local technologies = {
       prerequisites = {"logistics", "refrigerater"},
       unit = {
           count = 50,
-          ingredients = {
-              {"automation-science-pack", 1},
-              {"logistic-science-pack", 1}
-          },
+          ingredients = table.deepcopy(ingredRF),
           time = 30
       },
       effects = inserter_unlocks,
@@ -930,6 +1065,11 @@ if space_warehouse then
     data:extend({space_warehouse_unloading})
   end
 
+end
+
+-- Register fluids
+if hfc then
+  data:extend({hfc})
 end
 
 -- Register items
