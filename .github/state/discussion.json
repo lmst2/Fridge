@@ -1,20 +1,31 @@
 {
   "threads": [
     {
+      "id": "6afc635b0190c2f23ed0d71d",
+      "title": "(untitled)",
+      "url": "https://mods.factorio.com/mod/Fridge/discussion/6afc635b0190c2f23ed0d71d",
+      "author": "erronius",
+      "tag": "Bugs",
+      "replies": 0,
+      "posted_at": "2026-11-17T14:23:23.602000",
+      "last_message_by": "erronius",
+      "last_message_at": "2026-11-17T14:23:23.602000",
+      "change": "new_thread"
+    },
+    {
       "id": "6a93e3acdb280259fc0f2a28",
-      "title": "Crashing in Mod Settings menu [Automatically Fixed]",
+      "title": "(untitled)",
       "url": "https://mods.factorio.com/mod/Fridge/discussion/6a93e3acdb280259fc0f2a28",
       "author": "Faja2485",
       "tag": "General",
       "replies": 2,
       "posted_at": "2026-08-30T08:02:52.707000",
       "last_message_by": "R121",
-      "last_message_at": "2026-09-24T23:52:27.578000",
-      "change": "new_reply"
+      "last_message_at": "2026-09-24T23:52:27.578000"
     },
     {
       "id": "6aaadece2a203a4fe05f6c4e",
-      "title": "Preservation Wagon Capacity",
+      "title": "(untitled)",
       "url": "https://mods.factorio.com/mod/Fridge/discussion/6aaadece2a203a4fe05f6c4e",
       "author": "jivaii",
       "tag": "Ideas & suggestions",
@@ -25,7 +36,7 @@
     },
     {
       "id": "67350e335081d3a9667153e3",
-      "title": "rEfRiGeRaTeR [Automatically Fixed]",
+      "title": "(untitled)",
       "url": "https://mods.factorio.com/mod/Fridge/discussion/67350e335081d3a9667153e3",
       "author": "alincrys",
       "tag": "General",
@@ -36,7 +47,7 @@
     },
     {
       "id": "68016e9af665c7ebe7ca418a",
-      "title": "Incompatibility [Fixed]",
+      "title": "(untitled)",
       "url": "https://mods.factorio.com/mod/Fridge/discussion/68016e9af665c7ebe7ca418a",
       "author": "isaubarreto",
       "tag": "General",
@@ -47,7 +58,7 @@
     },
     {
       "id": "68ead39edcde091ec6df35d2",
-      "title": "laboratory refrigerator [Declined]",
+      "title": "(untitled)",
       "url": "https://mods.factorio.com/mod/Fridge/discussion/68ead39edcde091ec6df35d2",
       "author": "_M0RJ_",
       "tag": "Ideas & suggestions",
@@ -58,7 +69,7 @@
     },
     {
       "id": "679b0039c0f9c654c0016a6f",
-      "title": "alternative recipe for fidge [Automatically Fixed]",
+      "title": "(untitled)",
       "url": "https://mods.factorio.com/mod/Fridge/discussion/679b0039c0f9c654c0016a6f",
       "author": "Fr_Dae",
       "tag": "Ideas & suggestions",
@@ -69,7 +80,7 @@
     },
     {
       "id": "687001a0f28356cb36bcfe55",
-      "title": "mod caused an error [Automatically Fixed]",
+      "title": "(untitled)",
       "url": "https://mods.factorio.com/mod/Fridge/discussion/687001a0f28356cb36bcfe55",
       "author": "kvlnord",
       "tag": "General",
@@ -80,7 +91,7 @@
     },
     {
       "id": "6965395e4a05e29d3e43049b",
-      "title": "Small visual bug [Automatically Fixed]",
+      "title": "(untitled)",
       "url": "https://mods.factorio.com/mod/Fridge/discussion/6965395e4a05e29d3e43049b",
       "author": "erronius",
       "tag": "General",
@@ -91,7 +102,7 @@
     },
     {
       "id": "6850190c0095b4bdfb76ee13",
-      "title": "Freezing every 2 seconds [Fixed]",
+      "title": "(untitled)",
       "url": "https://mods.factorio.com/mod/Fridge/discussion/6850190c0095b4bdfb76ee13",
       "author": "CommanderTTM",
       "tag": "General",
@@ -102,7 +113,7 @@
     },
     {
       "id": "67c8d3155ae620a8b0fdbcce",
-      "title": "Stack/Bulk Preservation Inserter names are incorrect [Fixed]",
+      "title": "(untitled)",
       "url": "https://mods.factorio.com/mod/Fridge/discussion/67c8d3155ae620a8b0fdbcce",
       "author": "macintacos",
       "tag": "General",
@@ -113,7 +124,7 @@
     },
     {
       "id": "6a4bd019c549ce66f3c5aab5",
-      "title": "Update 2.1 ?",
+      "title": "(untitled)",
       "url": "https://mods.factorio.com/mod/Fridge/discussion/6a4bd019c549ce66f3c5aab5",
       "author": "Dreams68",
       "tag": "General",
@@ -124,7 +135,7 @@
     },
     {
       "id": "6893128885ce3fe47438ac7d",
-      "title": "Missing space platform cargo bay technology [Automatically Fixed]",
+      "title": "(untitled)",
       "url": "https://mods.factorio.com/mod/Fridge/discussion/6893128885ce3fe47438ac7d",
       "author": "UltraJohn",
       "tag": "Bugs",
@@ -135,7 +146,7 @@
     },
     {
       "id": "6783ee2a26b57210b2d741c2",
-      "title": "Can I use your mod to create a simplified version? [Permission Granted]",
+      "title": "(untitled)",
       "url": "https://mods.factorio.com/mod/Fridge/discussion/6783ee2a26b57210b2d741c2",
       "author": "snouz",
       "tag": "General",
@@ -146,7 +157,7 @@
     },
     {
       "id": "67b7734daed8271bd915595d",
-      "title": "Py Launch Crash",
+      "title": "(untitled)",
       "url": "https://mods.factorio.com/mod/Fridge/discussion/67b7734daed8271bd915595d",
       "author": "Arrevax",
       "tag": "General",
@@ -157,7 +168,7 @@
     },
     {
       "id": "67c2b9badd71dbeda87c8219",
-      "title": "Regarding unlocking conditions",
+      "title": "(untitled)",
       "url": "https://mods.factorio.com/mod/Fridge/discussion/67c2b9badd71dbeda87c8219",
       "author": "FlameField",
       "tag": "General",
@@ -168,7 +179,7 @@
     },
     {
       "id": "674bdba4649e4b13f59fd022",
-      "title": "Space Platform Hub [Completed]",
+      "title": "(untitled)",
       "url": "https://mods.factorio.com/mod/Fridge/discussion/674bdba4649e4b13f59fd022",
       "author": "Fury1SOG",
       "tag": "Ideas & suggestions",
@@ -179,7 +190,7 @@
     },
     {
       "id": "678d4d65dd8f743416121dad",
-      "title": "Crash with 0.2.0 [Fixed]",
+      "title": "(untitled)",
       "url": "https://mods.factorio.com/mod/Fridge/discussion/678d4d65dd8f743416121dad",
       "author": "kerosin75",
       "tag": "Bugs",
@@ -190,7 +201,7 @@
     },
     {
       "id": "678c46ad88df829833727a2a",
-      "title": "How does this mod work? [Fixed]",
+      "title": "(untitled)",
       "url": "https://mods.factorio.com/mod/Fridge/discussion/678c46ad88df829833727a2a",
       "author": "Flips",
       "tag": "General",
@@ -201,7 +212,7 @@
     },
     {
       "id": "678a4a47df927a07e0841daa",
-      "title": "Techonogy name error [Fixed]",
+      "title": "(untitled)",
       "url": "https://mods.factorio.com/mod/Fridge/discussion/678a4a47df927a07e0841daa",
       "author": "VTplayz",
       "tag": "Bugs",
@@ -212,7 +223,7 @@
     },
     {
       "id": "678bcc58e2d0714e5eaf4181",
-      "title": "Refrigerated Inserter [Added]",
+      "title": "(untitled)",
       "url": "https://mods.factorio.com/mod/Fridge/discussion/678bcc58e2d0714e5eaf4181",
       "author": "VTplayz",
       "tag": "Ideas & suggestions",
@@ -223,7 +234,7 @@
     },
     {
       "id": "675e20ec037e23ecc20972a4",
-      "title": "crash when space-age not enabled. [Fixed]",
+      "title": "(untitled)",
       "url": "https://mods.factorio.com/mod/Fridge/discussion/675e20ec037e23ecc20972a4",
       "author": "plexpt",
       "tag": "Bugs",
@@ -234,7 +245,7 @@
     },
     {
       "id": "6753bc5e99b0b1d74d90da0a",
-      "title": "Request: Refrigerated Train Car [Completed]",
+      "title": "(untitled)",
       "url": "https://mods.factorio.com/mod/Fridge/discussion/6753bc5e99b0b1d74d90da0a",
       "author": "Buggi",
       "tag": "Ideas & suggestions",
@@ -245,7 +256,7 @@
     },
     {
       "id": "67478e2922712b6bf911c780",
-      "title": "other versions of logistic [Declined]",
+      "title": "(untitled)",
       "url": "https://mods.factorio.com/mod/Fridge/discussion/67478e2922712b6bf911c780",
       "author": "Smeladonchik",
       "tag": "Ideas & suggestions",
@@ -256,7 +267,7 @@
     },
     {
       "id": "67252b59ed2563275c982251",
-      "title": "configs? [Added]",
+      "title": "(untitled)",
       "url": "https://mods.factorio.com/mod/Fridge/discussion/67252b59ed2563275c982251",
       "author": "darknigh5",
       "tag": "Ideas & suggestions",
@@ -267,7 +278,7 @@
     },
     {
       "id": "67377f50e168657f16c34a87",
-      "title": "error while game [Fixed]",
+      "title": "(untitled)",
       "url": "https://mods.factorio.com/mod/Fridge/discussion/67377f50e168657f16c34a87",
       "author": "Shpdibaum",
       "tag": "Bugs",
@@ -278,7 +289,7 @@
     },
     {
       "id": "6735bceddb4bb8fdc200335c",
-      "title": "How about using Fluoroketone or Ice to freeze? [Declined]",
+      "title": "(untitled)",
       "url": "https://mods.factorio.com/mod/Fridge/discussion/6735bceddb4bb8fdc200335c",
       "author": "RPO_LaoLv",
       "tag": "Ideas & suggestions",
@@ -289,7 +300,7 @@
     },
     {
       "id": "6734106328408ea08702acbd",
-      "title": "Logistic Requester variant does not have trash slots [Added]",
+      "title": "(untitled)",
       "url": "https://mods.factorio.com/mod/Fridge/discussion/6734106328408ea08702acbd",
       "author": "Retagin",
       "tag": "Ideas & suggestions",
@@ -300,7 +311,7 @@
     },
     {
       "id": "673155811c74e5a306b34be9",
-      "title": "Warehouse usage [Fixed]",
+      "title": "(untitled)",
       "url": "https://mods.factorio.com/mod/Fridge/discussion/673155811c74e5a306b34be9",
       "author": "V1irus",
       "tag": "Bugs",
@@ -311,7 +322,7 @@
     },
     {
       "id": "6731966e1c74e5a306b34c32",
-      "title": "Fluoroketone for Cooling [In Consideration]",
+      "title": "(untitled)",
       "url": "https://mods.factorio.com/mod/Fridge/discussion/6731966e1c74e5a306b34c32",
       "author": "Ranga226",
       "tag": "Ideas & suggestions",
@@ -322,7 +333,7 @@
     },
     {
       "id": "6724aab35b10f11c0ff7481b",
-      "title": "Crash [Fixed]",
+      "title": "(untitled)",
       "url": "https://mods.factorio.com/mod/Fridge/discussion/6724aab35b10f11c0ff7481b",
       "author": "eternal_wait",
       "tag": "Bugs",
@@ -333,7 +344,7 @@
     },
     {
       "id": "6724b67711d77ac63791770b",
-      "title": "Is it possible to use the ice in the game to keep fresh? [Declined]",
+      "title": "(untitled)",
       "url": "https://mods.factorio.com/mod/Fridge/discussion/6724b67711d77ac63791770b",
       "author": "tudou123",
       "tag": "Ideas & suggestions",
@@ -344,7 +355,7 @@
     },
     {
       "id": "672441dc801e65ec712445b2",
-      "title": "Crash on start [Fixed]",
+      "title": "(untitled)",
       "url": "https://mods.factorio.com/mod/Fridge/discussion/672441dc801e65ec712445b2",
       "author": "Feuerwalze",
       "tag": "Bugs",
@@ -355,7 +366,7 @@
     },
     {
       "id": "67232105e110c7da23813d4a",
-      "title": "logistic versions [Added]",
+      "title": "(untitled)",
       "url": "https://mods.factorio.com/mod/Fridge/discussion/67232105e110c7da23813d4a",
       "author": "eternal_wait",
       "tag": "Ideas & suggestions",
